@@ -20,9 +20,9 @@ const (
 func NewQueue(driver Driver, key message.Key, config driver.Config) (driver.Interface, error) {
 	switch driver {
 	case Amqp:
-		return amqp.NewAMQP(key, config)
+		return amqp.New(key, config)
 	case Redis:
-		return redis.NewRedis(key, config)
+		return redis.New(key, config)
 	default:
 		return nil, errors.New("queue driver not found.")
 	}

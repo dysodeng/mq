@@ -40,8 +40,8 @@ func (config *Config) String() string {
 	)
 }
 
-// NewAMQP new amqp driver
-func NewAMQP(key message.Key, config driver.Config) (*amqpDriver, error) {
+// New amqp driver
+func New(key message.Key, config driver.Config) (*amqpDriver, error) {
 	connect, err := amqp.Dial(config.String())
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed to connect to RabbitMQ")

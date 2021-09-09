@@ -18,7 +18,7 @@ func (config *Config) String() string {
 	return ""
 }
 
-func NewRedis(key message.Key, config driver.Config) (*redisDriver, error) {
+func New(key message.Key, config driver.Config) (*redisDriver, error) {
 	return &redisDriver{}, nil
 }
 
