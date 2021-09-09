@@ -1,4 +1,4 @@
-module github.com/dysoodeng/mq
+module github.com/dysodeng/mq
 
 go 1.16
 

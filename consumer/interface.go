@@ -1,6 +1,6 @@
 package consumer
 
-import "github.com/dysoodeng/mq/message"
+import "github.com/dysodeng/mq/message"
 
 // Handler 消费者接口
 type Handler interface {

@@ -1,10 +1,10 @@
 package mq
 
 import (
-	"github.com/dysoodeng/mq/driver"
-	"github.com/dysoodeng/mq/driver/amqp"
-	"github.com/dysoodeng/mq/driver/redis"
-	"github.com/dysoodeng/mq/message"
+	"github.com/dysodeng/mq/driver"
+	"github.com/dysodeng/mq/driver/amqp"
+	"github.com/dysodeng/mq/driver/redis"
+	"github.com/dysodeng/mq/message"
 	"github.com/pkg/errors"
 )
 

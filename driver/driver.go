@@ -1,8 +1,8 @@
 package driver
 
 import (
-	"github.com/dysoodeng/mq/consumer"
-	"github.com/dysoodeng/mq/message"
+	"github.com/dysodeng/mq/consumer"
+	"github.com/dysodeng/mq/message"
 )
 
 // Interface 消息队列驱动接口

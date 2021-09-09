@@ -1,9 +1,9 @@
 package redis
 
 import (
-	"github.com/dysoodeng/mq/consumer"
-	"github.com/dysoodeng/mq/driver"
-	"github.com/dysoodeng/mq/message"
+	"github.com/dysodeng/mq/consumer"
+	"github.com/dysodeng/mq/driver"
+	"github.com/dysodeng/mq/message"
 )
 
 type redisDriver struct {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/dysoodeng/mq/consumer"
-	"github.com/dysoodeng/mq/driver"
-	"github.com/dysoodeng/mq/message"
+	"github.com/dysodeng/mq/consumer"
+	"github.com/dysodeng/mq/driver"
+	"github.com/dysodeng/mq/message"
 	"github.com/pkg/errors"
 	"github.com/streadway/amqp"
 )
