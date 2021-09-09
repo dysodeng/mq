@@ -12,7 +12,7 @@ import (
 )
 
 // AMQP amqp驱动
-type AMQP struct {
+type amqpDriver struct {
 	config  driver.Config
 	key     message.Key
 	connect *amqp.Connection
@@ -41,7 +41,7 @@ func (config *Config) String() string {
 }
 
 // NewAMQP new amqp driver
-func NewAMQP(key message.Key, config driver.Config) (*AMQP, error) {
+func NewAMQP(key message.Key, config driver.Config) (*amqpDriver, error) {
 	connect, err := amqp.Dial(config.String())
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed to connect to RabbitMQ")
@@ -69,7 +69,7 @@ func NewAMQP(key message.Key, config driver.Config) (*AMQP, error) {
 		return nil, errors.Wrap(err, "Failed to declare an exchange")
 	}
 
-	return &AMQP{
+	return &amqpDriver{
 		key:     key,
 		config:  config,
 		connect: connect,
@@ -77,7 +77,7 @@ func NewAMQP(key message.Key, config driver.Config) (*AMQP, error) {
 	}, nil
 }
 
-func (amqpDriver *AMQP) QueuePublish(messageBody string) (message.Message, error) {
+func (amqpDriver *amqpDriver) QueuePublish(messageBody string) (message.Message, error) {
 	msg := message.NewMessage(amqpDriver.key, "", messageBody)
 
 	err := amqpDriver.channel.Publish(
@@ -100,11 +100,11 @@ func (amqpDriver *AMQP) QueuePublish(messageBody string) (message.Message, error
 	return msg, nil
 }
 
-func (amqpDriver *AMQP) DelayQueuePublish(messageBody string, ttl int64) (message.Message, error) {
+func (amqpDriver *amqpDriver) DelayQueuePublish(messageBody string, ttl int64) (message.Message, error) {
 	return message.NewMessage(amqpDriver.key, "", messageBody), nil
 }
 
-func (amqpDriver *AMQP) QueueConsume(consumer consumer.Handler) error {
+func (amqpDriver *amqpDriver) QueueConsume(consumer consumer.Handler) error {
 	queue, err := amqpDriver.channel.QueueDeclare(
 		amqpDriver.key.QueueName,
 		true,
@@ -156,11 +156,11 @@ func (amqpDriver *AMQP) QueueConsume(consumer consumer.Handler) error {
 	return nil
 }
 
-func (amqpDriver *AMQP) DelayQueueConsume(consumer consumer.Handler) error {
+func (amqpDriver *amqpDriver) DelayQueueConsume(consumer consumer.Handler) error {
 	return nil
 }
 
-func (amqpDriver *AMQP) Close() error {
+func (amqpDriver *amqpDriver) Close() error {
 	_ = amqpDriver.channel.Close()
 	_ = amqpDriver.connect.Close()
 	return nil

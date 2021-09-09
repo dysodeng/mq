@@ -6,7 +6,7 @@ import (
 	"github.com/dysoodeng/mq/message"
 )
 
-type Redis struct {
+type redisDriver struct {
 	config Config
 	key    message.Key
 }
@@ -18,26 +18,26 @@ func (config *Config) String() string {
 	return ""
 }
 
-func NewRedis(key message.Key, config driver.Config) (*Redis, error) {
-	return nil, nil
+func NewRedis(key message.Key, config driver.Config) (*redisDriver, error) {
+	return &redisDriver{}, nil
 }
 
-func (redisDriver Redis) QueuePublish(messageBody string) (message.Message, error) {
+func (redisDriver *redisDriver) QueuePublish(messageBody string) (message.Message, error) {
 	return message.Message{}, nil
 }
 
-func (redisDriver Redis) DelayQueuePublish(messageBody string, ttl int64) (message.Message, error) {
+func (redisDriver *redisDriver) DelayQueuePublish(messageBody string, ttl int64) (message.Message, error) {
 	return message.Message{}, nil
 }
 
-func (redisDriver Redis) QueueConsume(consumer consumer.Handler) error {
+func (redisDriver *redisDriver) QueueConsume(consumer consumer.Handler) error {
 	return nil
 }
 
-func (redisDriver Redis) DelayQueueConsume(consumer consumer.Handler) error {
+func (redisDriver *redisDriver) DelayQueueConsume(consumer consumer.Handler) error {
 	return nil
 }
 
-func (redisDriver Redis) Close() error {
+func (redisDriver *redisDriver) Close() error {
 	return nil
 }
