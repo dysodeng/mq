@@ -2,43 +2,47 @@ package amqp
 
 import (
 	"fmt"
+	"log"
+
 	"github.com/dysoodeng/mq/consumer"
+	"github.com/dysoodeng/mq/driver"
 	"github.com/dysoodeng/mq/message"
 	"github.com/pkg/errors"
 	"github.com/streadway/amqp"
-	"log"
 )
 
 // AMQP amqp驱动
 type AMQP struct {
-	config Config
-	key message.Key
+	config  driver.Config
+	key     message.Key
 	connect *amqp.Connection
 	channel *amqp.Channel
 }
 
 // Config 配置
 type Config struct {
-	Host string
+	Host     string
 	Username string
 	Password string
-	VHost string
+	VHost    string
 }
 
-
-// NewAMQP new amqp driver
-func NewAMQP(key message.Key, config Config) (*AMQP, error) {
+func (config *Config) String() string {
 	if config.VHost == "" {
 		config.VHost = "/"
 	}
-
-	connect, err := amqp.Dial(fmt.Sprintf(
+	return fmt.Sprintf(
 		"amqp://%s:%s@%s%s",
 		config.Username,
 		config.Password,
 		config.Host,
-		config.VHost),
+		config.VHost,
 	)
+}
+
+// NewAMQP new amqp driver
+func NewAMQP(key message.Key, config driver.Config) (*AMQP, error) {
+	connect, err := amqp.Dial(config.String())
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed to connect to RabbitMQ")
 	}
@@ -66,14 +70,14 @@ func NewAMQP(key message.Key, config Config) (*AMQP, error) {
 	}
 
 	return &AMQP{
-		key: key,
-		config: config,
+		key:     key,
+		config:  config,
 		connect: connect,
 		channel: ch,
 	}, nil
 }
 
-func (amqpDriver *AMQP) QueuePublish(messageBody string)(message.Message, error) {
+func (amqpDriver *AMQP) QueuePublish(messageBody string) (message.Message, error) {
 	msg := message.NewMessage(amqpDriver.key, "", messageBody)
 
 	err := amqpDriver.channel.Publish(
@@ -83,9 +87,9 @@ func (amqpDriver *AMQP) QueuePublish(messageBody string)(message.Message, error)
 		false,
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
-			ContentType: "text/plain",
-			Body: []byte(messageBody),
-			MessageId: msg.Id(),
+			ContentType:  "text/plain",
+			Body:         []byte(messageBody),
+			MessageId:    msg.Id(),
 		},
 	)
 
@@ -140,7 +144,7 @@ func (amqpDriver *AMQP) QueueConsume(consumer consumer.Handler) error {
 		return errors.Wrap(err, "Failed to register a consumer")
 	}
 
-	log.Printf(" [*] Waiting for messages. To exit press CTRL+C\n")
+	log.Printf(" [*] mq:" + amqpDriver.key.QueueName + " Waiting for messages.\n")
 
 	for m := range msg {
 		consumerError := consumer.Handle(message.NewMessage(amqpDriver.key, m.MessageId, string(m.Body)))
