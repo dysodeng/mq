@@ -23,6 +23,8 @@ type Key struct {
 	QueueName string
 	// RouteKey 队列路由
 	RouteKey string
+	// IsDelay 是否延时队列
+	IsDelay bool
 }
 
 // NewMessage 创建队列消息体
@@ -31,9 +33,9 @@ func NewMessage(key Key, id, body string) Message {
 		id = strings.Replace(uuid.New().String(), "-", "", -1)
 	}
 	return Message{
-		id: id,
+		id:   id,
 		body: body,
-		key: key,
+		key:  key,
 	}
 }
 
@@ -55,4 +57,8 @@ func (message *Message) QueueName() string {
 
 func (message *Message) RouteKey() string {
 	return message.key.RouteKey
+}
+
+func (message *Message) IsDelay() bool {
+	return message.key.IsDelay
 }
