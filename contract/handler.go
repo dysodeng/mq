@@ -1,4 +1,4 @@
-package consumer
+package contract
 
 import "github.com/dysodeng/mq/message"
 

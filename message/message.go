@@ -1,8 +1,9 @@
 package message
 
 import (
-	"github.com/google/uuid"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Message 队列消息体
@@ -23,8 +24,6 @@ type Key struct {
 	QueueName string
 	// RouteKey 队列路由
 	RouteKey string
-	// IsDelay 是否延时队列
-	IsDelay bool
 }
 
 // NewMessage 创建队列消息体
@@ -57,8 +56,4 @@ func (message *Message) QueueName() string {
 
 func (message *Message) RouteKey() string {
 	return message.key.RouteKey
-}
-
-func (message *Message) IsDelay() bool {
-	return message.key.IsDelay
 }
