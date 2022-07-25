@@ -7,8 +7,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-type MessageQueue struct{}
-
 type Driver string
 
 const (
