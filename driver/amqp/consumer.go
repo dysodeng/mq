@@ -157,7 +157,7 @@ func (amqpConsumer *amqpConsumer) DelayQueueConsume(handler contract.Handler) er
 		return errors.Wrap(err, "Failed to declare a queue")
 	}
 
-	err = amqpConsumer.channel.QueueBind(
+	err = ch.QueueBind(
 		queue.Name,
 		amqpConsumer.key.RouteKey,
 		amqpConsumer.key.ExchangeName,
@@ -170,7 +170,7 @@ func (amqpConsumer *amqpConsumer) DelayQueueConsume(handler contract.Handler) er
 		return errors.Wrap(err, "Failed to bind a queue")
 	}
 
-	msg, err := amqpConsumer.channel.Consume(
+	msg, err := ch.Consume(
 		queue.Name,
 		"",
 		false,
