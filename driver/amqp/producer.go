@@ -20,7 +20,6 @@ const (
 // amqpProducer AMQP消息生产者
 type amqpProducer struct {
 	config contract.Config
-	key    message.Key
 	pool   *amqpConnectionPool
 }
 
@@ -59,7 +58,7 @@ func (config *Config) PoolConfig() contract.Pool {
 }
 
 // NewProducerConn amqp producer connection
-func NewProducerConn(key message.Key, config contract.Config) (contract.Producer, error) {
+func NewProducerConn(config contract.Config) (contract.Producer, error) {
 	pc := config.PoolConfig()
 	pool, err := newAmqpConnectionPool(poolConfig{
 		MinConn:    pc.MinConn,
@@ -71,13 +70,12 @@ func NewProducerConn(key message.Key, config contract.Config) (contract.Producer
 		return nil, err
 	}
 	return &amqpProducer{
-		key:    key,
 		config: config,
 		pool:   pool,
 	}, nil
 }
 
-func (producer *amqpProducer) QueuePublish(messageBody string) (message.Message, error) {
+func (producer *amqpProducer) QueuePublish(queueKey, messageBody string) (message.Message, error) {
 	conn, err := producer.pool.Get()
 	if err != nil {
 		return message.Message{}, errors.Wrap(err, "")
@@ -95,7 +93,7 @@ func (producer *amqpProducer) QueuePublish(messageBody string) (message.Message,
 	}()
 
 	err = channel.ExchangeDeclare(
-		producer.key.ExchangeName,
+		queueKey,
 		amqp.ExchangeDirect,
 		true,
 		false,
@@ -107,11 +105,15 @@ func (producer *amqpProducer) QueuePublish(messageBody string) (message.Message,
 		return message.Message{}, err
 	}
 
-	msg := message.NewMessage(producer.key, "", messageBody)
+	msg := message.NewMessage(message.Key{
+		ExchangeName: queueKey,
+		QueueName:    queueKey,
+		RouteKey:     queueKey,
+	}, "", messageBody)
 
 	err = channel.Publish(
-		producer.key.ExchangeName,
-		producer.key.RouteKey,
+		queueKey,
+		queueKey,
 		false,
 		false,
 		amqp.Publishing{
@@ -129,7 +131,7 @@ func (producer *amqpProducer) QueuePublish(messageBody string) (message.Message,
 	return msg, nil
 }
 
-func (producer *amqpProducer) DelayQueuePublish(messageBody string, ttl int64) (message.Message, error) {
+func (producer *amqpProducer) DelayQueuePublish(queueKey, messageBody string, ttl int64) (message.Message, error) {
 	conn, err := producer.pool.Get()
 	if err != nil {
 		return message.Message{}, errors.Wrap(err, "")
@@ -147,7 +149,7 @@ func (producer *amqpProducer) DelayQueuePublish(messageBody string, ttl int64) (
 	}()
 
 	err = channel.ExchangeDeclare(
-		producer.key.ExchangeName,
+		queueKey,
 		"x-delayed-message",
 		true,
 		false,
@@ -158,11 +160,15 @@ func (producer *amqpProducer) DelayQueuePublish(messageBody string, ttl int64) (
 		},
 	)
 
-	msg := message.NewMessage(producer.key, "", messageBody)
+	msg := message.NewMessage(message.Key{
+		ExchangeName: queueKey,
+		QueueName:    queueKey,
+		RouteKey:     queueKey,
+	}, "", messageBody)
 
 	err = channel.Publish(
-		producer.key.ExchangeName,
-		producer.key.RouteKey,
+		queueKey,
+		queueKey,
 		false,
 		false,
 		amqp.Publishing{

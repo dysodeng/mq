@@ -28,14 +28,10 @@ func NewQueueConsumer(driver Driver, queueKey string, config contract.Config) (c
 }
 
 // NewQueueProducer 队列生产者
-func NewQueueProducer(driver Driver, queueKey string, config contract.Config) (contract.Producer, error) {
+func NewQueueProducer(driver Driver, config contract.Config) (contract.Producer, error) {
 	switch driver {
 	case Amqp:
-		return amqp.NewProducerConn(message.Key{
-			ExchangeName: queueKey,
-			QueueName:    queueKey,
-			RouteKey:     queueKey,
-		}, config)
+		return amqp.NewProducerConn(config)
 	default:
 		return nil, errors.New("queue driver not found.")
 	}
