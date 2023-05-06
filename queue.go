@@ -4,7 +4,6 @@ import (
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/driver/amqp"
 	"github.com/dysodeng/mq/driver/redis"
-	"github.com/dysodeng/mq/message"
 	"github.com/pkg/errors"
 )
 
@@ -19,17 +18,9 @@ const (
 func NewQueueConsumer(driver Driver, queueKey string, config contract.Config) (contract.Consumer, error) {
 	switch driver {
 	case Amqp:
-		return amqp.NewConsumerConn(message.Key{
-			ExchangeName: queueKey,
-			QueueName:    queueKey,
-			RouteKey:     queueKey,
-		}, config)
+		return amqp.NewConsumerConn(queueKey, config)
 	case Redis:
-		return redis.NewConsumerConn(message.Key{
-			ExchangeName: queueKey,
-			QueueName:    queueKey,
-			RouteKey:     queueKey,
-		}, config)
+		return redis.NewConsumerConn(queueKey, config)
 	default:
 		return nil, errors.New("queue driver not found.")
 	}

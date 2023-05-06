@@ -20,7 +20,7 @@ const retryNum int = 3 // 重试次数
 // redisConsumer Redis消息消费者
 type redisConsumer struct {
 	config  contract.Config
-	key     message.Key
+	key     string
 	connect *redis.Client
 	isDelay bool
 	ack     map[string]int
@@ -28,7 +28,7 @@ type redisConsumer struct {
 }
 
 // NewConsumerConn new consumer connection
-func NewConsumerConn(key message.Key, config contract.Config) (contract.Consumer, error) {
+func NewConsumerConn(key string, config contract.Config) (contract.Consumer, error) {
 	opts, err := redis.ParseURL(config.String())
 	if err != nil {
 		return nil, errors.Wrap(err, "Redis connect config error.")
@@ -45,7 +45,7 @@ func NewConsumerConn(key message.Key, config contract.Config) (contract.Consumer
 }
 
 func (consumer *redisConsumer) Key() string {
-	return consumer.key.ExchangeName + "." + consumer.key.QueueName + "." + consumer.key.RouteKey
+	return consumer.key
 }
 
 // QueueConsume 普通队列消费
@@ -60,17 +60,17 @@ func (consumer *redisConsumer) QueueConsume(handler contract.Handler) error {
 			"payload": "init",
 		},
 	})
-	consumer.connect.XGroupCreate(ctx, consumer.Key(), consumer.key.QueueName, "0")
+	consumer.connect.XGroupCreate(ctx, consumer.Key(), consumer.key, "0")
 
-	log.Printf(" [*] mq:" + consumer.key.QueueName + " Waiting for messages.\n")
+	log.Printf(" [*] mq:" + consumer.key + " Waiting for messages.\n")
 
 	uuidItem, _ := uuid.NewUUID()
 	queueConsume := strings.Replace(uuidItem.String(), "-", "", -1)
 
 	for {
 		res, err := consumer.connect.XReadGroup(context.Background(), &redis.XReadGroupArgs{
-			Group:    consumer.key.QueueName,
-			Consumer: consumer.key.QueueName + queueConsume,
+			Group:    consumer.key,
+			Consumer: consumer.key + queueConsume,
 			Streams:  []string{consumer.Key(), ">"},
 			Count:    1,
 			Block:    0,
@@ -84,7 +84,7 @@ func (consumer *redisConsumer) QueueConsume(handler contract.Handler) error {
 			m := stream.Messages[0]
 			if t, ok := m.Values["type"]; ok {
 				if t == "init" {
-					consumer.connect.XAck(context.Background(), consumer.Key(), consumer.key.QueueName, m.ID)
+					consumer.connect.XAck(context.Background(), consumer.Key(), consumer.key, m.ID)
 					break
 				}
 			}
@@ -96,7 +96,7 @@ func (consumer *redisConsumer) QueueConsume(handler contract.Handler) error {
 			}
 			consumerError := handler.Handle(message.NewMessage(consumer.key, m.ID, payload))
 			if consumerError == nil {
-				consumer.connect.XAck(context.Background(), consumer.Key(), consumer.key.QueueName, m.ID)
+				consumer.connect.XAck(context.Background(), consumer.Key(), consumer.key, m.ID)
 			}
 		}
 	}
@@ -104,7 +104,7 @@ func (consumer *redisConsumer) QueueConsume(handler contract.Handler) error {
 
 // DelayQueueConsume 延时队列消费
 func (consumer *redisConsumer) DelayQueueConsume(handler contract.Handler) error {
-	log.Printf(" [*] mq:" + consumer.key.QueueName + " Waiting for messages.\n")
+	log.Printf(" [*] mq:" + consumer.key + " Waiting for messages.\n")
 	ctx := context.Background()
 
 	payloadKey := consumer.Key() + ".payload"
@@ -148,13 +148,13 @@ func (consumer *redisConsumer) DelayQueueConsume(handler contract.Handler) error
 						consumer.connect.HMSet(ctx, payloadKey, map[string]interface{}{messageId: payload})
 						consumer.connect.ZIncrBy(ctx, consumer.Key(), float64(3*count), messageId)
 						consumer.connect.SRem(context.Background(), ackKey, messageId)
-						log.Printf(" [*] mq:%s messages %s retry...\n", consumer.key.QueueName, messageId)
+						log.Printf(" [*] mq:%s messages %s retry...\n", consumer.key, messageId)
 					} else {
 						consumer.connect.ZRem(context.Background(), consumer.Key(), messageId)
 						consumer.connect.HDel(context.Background(), payloadKey, messageId)
 						consumer.connect.SRem(context.Background(), ackKey, messageId)
 						consumer.retryCount(mark, true)
-						log.Printf("[*] mq:%s message %s fail", consumer.key.QueueName, messageId)
+						log.Printf("[*] mq:%s message %s fail", consumer.key, messageId)
 					}
 				}
 			}

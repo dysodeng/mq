@@ -12,14 +12,14 @@ import (
 // amqpConsumer AMQP消息消费者
 type amqpConsumer struct {
 	config  contract.Config
-	key     message.Key
+	key     string
 	connect *amqp.Connection
 	channel *amqp.Channel
 	isDelay bool
 }
 
 // NewConsumerConn new consumer connection
-func NewConsumerConn(key message.Key, config contract.Config) (contract.Consumer, error) {
+func NewConsumerConn(key string, config contract.Config) (contract.Consumer, error) {
 	var err error
 	var connect *amqp.Connection
 
@@ -44,7 +44,7 @@ func (amqpConsumer *amqpConsumer) QueueConsume(handler contract.Handler) error {
 	}
 
 	err = ch.ExchangeDeclare(
-		amqpConsumer.key.ExchangeName,
+		amqpConsumer.key,
 		amqp.ExchangeDirect,
 		true,
 		false,
@@ -60,7 +60,7 @@ func (amqpConsumer *amqpConsumer) QueueConsume(handler contract.Handler) error {
 	}
 
 	queue, err := ch.QueueDeclare(
-		amqpConsumer.key.QueueName,
+		amqpConsumer.key,
 		true,
 		false,
 		false,
@@ -74,8 +74,8 @@ func (amqpConsumer *amqpConsumer) QueueConsume(handler contract.Handler) error {
 
 	err = ch.QueueBind(
 		queue.Name,
-		amqpConsumer.key.RouteKey,
-		amqpConsumer.key.ExchangeName,
+		amqpConsumer.key,
+		amqpConsumer.key,
 		false,
 		nil,
 	)
@@ -85,8 +85,8 @@ func (amqpConsumer *amqpConsumer) QueueConsume(handler contract.Handler) error {
 	defer func() {
 		err = ch.QueueUnbind(
 			queue.Name,
-			amqpConsumer.key.RouteKey,
-			amqpConsumer.key.ExchangeName,
+			amqpConsumer.key,
+			amqpConsumer.key,
 			nil,
 		)
 		log.Printf("%+v", err)
@@ -105,7 +105,7 @@ func (amqpConsumer *amqpConsumer) QueueConsume(handler contract.Handler) error {
 		return errors.Wrap(err, "Failed to register a consumer")
 	}
 
-	log.Printf(" [*] mq:" + amqpConsumer.key.QueueName + " Waiting for messages.\n")
+	log.Printf(" [*] mq:" + amqpConsumer.key + " Waiting for messages.\n")
 
 	for m := range msg {
 		consumerError := handler.Handle(message.NewMessage(amqpConsumer.key, m.MessageId, string(m.Body)))
@@ -126,7 +126,7 @@ func (amqpConsumer *amqpConsumer) DelayQueueConsume(handler contract.Handler) er
 	}
 
 	err = ch.ExchangeDeclare(
-		amqpConsumer.key.ExchangeName,
+		amqpConsumer.key,
 		"x-delayed-message",
 		true,
 		false,
@@ -144,7 +144,7 @@ func (amqpConsumer *amqpConsumer) DelayQueueConsume(handler contract.Handler) er
 	}
 
 	queue, err := ch.QueueDeclare(
-		amqpConsumer.key.QueueName,
+		amqpConsumer.key,
 		true,
 		false,
 		false,
@@ -159,8 +159,8 @@ func (amqpConsumer *amqpConsumer) DelayQueueConsume(handler contract.Handler) er
 
 	err = ch.QueueBind(
 		queue.Name,
-		amqpConsumer.key.RouteKey,
-		amqpConsumer.key.ExchangeName,
+		amqpConsumer.key,
+		amqpConsumer.key,
 		false,
 		nil,
 	)
@@ -185,7 +185,7 @@ func (amqpConsumer *amqpConsumer) DelayQueueConsume(handler contract.Handler) er
 		return errors.Wrap(err, "Failed to register a consumer")
 	}
 
-	log.Printf(" [*] mq:" + amqpConsumer.key.QueueName + " Waiting for messages.\n")
+	log.Printf(" [*] mq:" + amqpConsumer.key + " Waiting for messages.\n")
 
 	for m := range msg {
 		consumerError := handler.Handle(message.NewMessage(amqpConsumer.key, m.MessageId, string(m.Body)))

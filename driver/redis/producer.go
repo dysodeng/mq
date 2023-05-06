@@ -35,7 +35,7 @@ func NewProducerConn(config contract.Config) (contract.Producer, error) {
 }
 
 func (producer *redisProducer) Key(queueKey string) string {
-	return queueKey + "." + queueKey + "." + queueKey
+	return queueKey
 }
 
 func (producer *redisProducer) QueuePublish(queueKey, messageBody string) (message.Message, error) {
@@ -49,21 +49,13 @@ func (producer *redisProducer) QueuePublish(queueKey, messageBody string) (messa
 			"payload": messageBody,
 		},
 	}).String()
-	return message.NewMessage(message.Key{
-		ExchangeName: queueKey,
-		QueueName:    queueKey,
-		RouteKey:     queueKey,
-	}, msgID, messageBody), nil
+	return message.NewMessage(queueKey, msgID, messageBody), nil
 }
 
 func (producer *redisProducer) DelayQueuePublish(queueKey, messageBody string, ttl int64) (message.Message, error) {
 	ctx := context.Background()
 
-	msg := message.NewMessage(message.Key{
-		ExchangeName: queueKey,
-		QueueName:    queueKey,
-		RouteKey:     queueKey,
-	}, "", messageBody)
+	msg := message.NewMessage(queueKey, "", messageBody)
 
 	producer.connect.HMSet(ctx, producer.Key(queueKey)+".payload", map[string]interface{}{msg.Id(): messageBody})
 	producer.connect.ZAddNX(ctx, producer.Key(queueKey), &redis.Z{Member: msg.Id(), Score: float64(time.Now().Unix() + ttl)})

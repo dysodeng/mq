@@ -70,11 +70,7 @@ func (producer *amqpProducer) QueuePublish(queueKey, messageBody string) (messag
 		return message.Message{}, err
 	}
 
-	msg := message.NewMessage(message.Key{
-		ExchangeName: queueKey,
-		QueueName:    queueKey,
-		RouteKey:     queueKey,
-	}, "", messageBody)
+	msg := message.NewMessage(queueKey, "", messageBody)
 
 	err = channel.Publish(
 		queueKey,
@@ -125,11 +121,7 @@ func (producer *amqpProducer) DelayQueuePublish(queueKey, messageBody string, tt
 		},
 	)
 
-	msg := message.NewMessage(message.Key{
-		ExchangeName: queueKey,
-		QueueName:    queueKey,
-		RouteKey:     queueKey,
-	}, "", messageBody)
+	msg := message.NewMessage(queueKey, "", messageBody)
 
 	err = channel.Publish(
 		queueKey,
