@@ -22,6 +22,8 @@ func (config *Config) String() string {
 	dsn := "redis://"
 	if config.Username != "" && config.Password != "" {
 		dsn += fmt.Sprintf("%s:%s@", config.Username, config.Password)
+	} else if config.Password != "" {
+		dsn += fmt.Sprintf(":%s@", config.Password)
 	}
 	return fmt.Sprintf("%s%s/%d", dsn, config.Addr, config.DB)
 }

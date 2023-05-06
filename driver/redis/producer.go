@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"time"
 
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/message"
@@ -56,5 +57,16 @@ func (producer *redisProducer) QueuePublish(queueKey, messageBody string) (messa
 }
 
 func (producer *redisProducer) DelayQueuePublish(queueKey, messageBody string, ttl int64) (message.Message, error) {
-	return message.Message{}, nil
+	ctx := context.Background()
+
+	msg := message.NewMessage(message.Key{
+		ExchangeName: queueKey,
+		QueueName:    queueKey,
+		RouteKey:     queueKey,
+	}, "", messageBody)
+
+	producer.connect.HMSet(ctx, producer.Key(queueKey)+".payload", map[string]interface{}{msg.Id(): messageBody})
+	producer.connect.ZAddNX(ctx, producer.Key(queueKey), &redis.Z{Member: msg.Id(), Score: float64(time.Now().Unix() + ttl)})
+
+	return msg, nil
 }
