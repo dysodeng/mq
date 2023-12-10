@@ -7,7 +7,7 @@ import (
 
 	"github.com/dysodeng/mq/contract"
 	"github.com/pkg/errors"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 var (

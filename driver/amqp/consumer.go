@@ -6,7 +6,7 @@ import (
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/message"
 	"github.com/pkg/errors"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // amqpConsumer AMQP消息消费者

@@ -1,12 +1,13 @@
 package amqp
 
 import (
+	"context"
 	"time"
 
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/message"
 	"github.com/pkg/errors"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 const (
@@ -72,7 +73,8 @@ func (producer *amqpProducer) QueuePublish(queueKey, messageBody string) (messag
 
 	msg := message.NewMessage(queueKey, "", messageBody)
 
-	err = channel.Publish(
+	err = channel.PublishWithContext(
+		context.Background(),
 		queueKey,
 		queueKey,
 		false,
@@ -123,7 +125,8 @@ func (producer *amqpProducer) DelayQueuePublish(queueKey, messageBody string, tt
 
 	msg := message.NewMessage(queueKey, "", messageBody)
 
-	err = channel.Publish(
+	err = channel.PublishWithContext(
+		context.Background(),
 		queueKey,
 		queueKey,
 		false,
