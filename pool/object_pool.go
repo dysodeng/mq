@@ -59,7 +59,8 @@ func NewByteBufferPool() *ByteBufferPool {
 	return &ByteBufferPool{
 		pool: sync.Pool{
 			New: func() interface{} {
-				return make([]byte, 0, 1024) // 初始容量1KB
+				buf := make([]byte, 0, 1024) // 初始容量1KB
+				return &buf
 			},
 		},
 	}
@@ -67,12 +68,14 @@ func NewByteBufferPool() *ByteBufferPool {
 
 // Get 获取字节缓冲
 func (p *ByteBufferPool) Get() []byte {
-	return p.pool.Get().([]byte)[:0] // 重置长度但保留容量
+	bufPtr := p.pool.Get().(*[]byte)
+	*bufPtr = (*bufPtr)[:0] // 重置长度但保留容量
+	return *bufPtr
 }
 
 // Put 归还字节缓冲
 func (p *ByteBufferPool) Put(buf []byte) {
 	if cap(buf) <= 64*1024 { // 限制最大容量64KB
-		p.pool.Put(buf)
+		p.pool.Put(&buf) // 传递指针
 	}
 }
