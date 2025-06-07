@@ -18,14 +18,14 @@ import (
 
 // DelayQueue Redis延时队列实现
 type DelayQueue struct {
-	client    *redis.Client
+	client    redis.Cmdable
 	meter     metric.Meter
 	logger    *zap.Logger
 	keyPrefix string
 }
 
 // NewRedisDelayQueue 创建Redis延时队列
-func NewRedisDelayQueue(client *redis.Client, observer observability.Observer, keyPrefix string) *DelayQueue {
+func NewRedisDelayQueue(client redis.Cmdable, observer observability.Observer, keyPrefix string) *DelayQueue {
 	return &DelayQueue{
 		client:    client,
 		meter:     observer.GetMeter(),

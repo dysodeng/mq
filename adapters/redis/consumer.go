@@ -16,7 +16,7 @@ import (
 
 // Consumer Redis消费者
 type Consumer struct {
-	client      *redis.Client
+	client      redis.Cmdable
 	meter       metric.Meter
 	logger      *zap.Logger
 	subscribers map[string]*subscription
@@ -34,7 +34,7 @@ type subscription struct {
 }
 
 // NewRedisConsumer 创建Redis消费者
-func NewRedisConsumer(client *redis.Client, observer observability.Observer, keyPrefix string) *Consumer {
+func NewRedisConsumer(client redis.Cmdable, observer observability.Observer, keyPrefix string) *Consumer {
 	return &Consumer{
 		client:      client,
 		meter:       observer.GetMeter(),

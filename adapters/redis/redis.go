@@ -2,43 +2,47 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/observability"
-	"github.com/go-redis/redis/v8"
 )
 
 // Redis Redis消息队列实现
 type Redis struct {
-	client     *redis.Client
-	producer   *Producer
-	consumer   *Consumer
-	delayQueue *DelayQueue
-	recorder   *observability.MetricsRecorder
-	keyPrefix  string
+	client        Client
+	clientFactory *ClientFactory
+	producer      *Producer
+	consumer      *Consumer
+	delayQueue    *DelayQueue
+	recorder      *observability.MetricsRecorder
+	keyPrefix     string
+	config        config.RedisConfig
+
+	// 延时消息处理
+	delayProcessor *DelayProcessor
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	closed         bool
+	mu             sync.RWMutex
 }
 
 // NewRedisMQ 创建Redis消息队列
-// 在NewRedisMQ函数中启动延时消息处理器
 func NewRedisMQ(config config.RedisConfig, observer observability.Observer, keyPrefix string) (*Redis, error) {
 	if keyPrefix == "" {
 		keyPrefix = "mq"
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:         config.Addr, // 改为单个地址
-		Password:     config.Password,
-		DB:           config.DB,
-		PoolSize:     config.PoolSize,     // 直接使用字段
-		MinIdleConns: config.MinIdleConns, // 直接使用字段
-		IdleTimeout:  config.IdleTimeout,  // 直接使用字段
-		MaxConnAge:   config.MaxConnAge,   // 直接使用字段
-		PoolTimeout:  config.PoolTimeout,  // 新增字段
-	})
+	// 创建客户端工厂
+	clientFactory := NewClientFactory(config)
+	client, err := clientFactory.CreateClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create redis client: %w", err)
+	}
 
 	// 测试连接
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -53,44 +57,35 @@ func NewRedisMQ(config config.RedisConfig, observer observability.Observer, keyP
 		return nil, fmt.Errorf("failed to create metrics recorder: %w", err)
 	}
 
+	// 创建上下文
+	mqCtx, mqCancel := context.WithCancel(context.Background())
+
 	mq := &Redis{
-		client:    client,
-		recorder:  recorder,
-		keyPrefix: keyPrefix,
+		client:        client,
+		clientFactory: clientFactory,
+		recorder:      recorder,
+		keyPrefix:     keyPrefix,
+		config:        config,
+		ctx:           mqCtx,
+		cancel:        mqCancel,
 	}
 
+	// 创建组件
 	mq.producer = NewRedisProducer(client, observer, keyPrefix)
 	mq.consumer = NewRedisConsumer(client, observer, keyPrefix)
 	mq.delayQueue = NewRedisDelayQueue(client, observer, keyPrefix)
 
+	// 创建延时消息处理器
+	mq.delayProcessor = NewDelayProcessor(client, observer, keyPrefix)
+
 	// 启动延时消息处理器
-	go mq.processDelayMessages(context.Background())
+	mq.wg.Add(1)
+	go func() {
+		defer mq.wg.Done()
+		mq.delayProcessor.Start(mq.ctx)
+	}()
 
 	return mq, nil
-}
-
-// processDelayMessages 处理延时消息
-func (r *Redis) processDelayMessages(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second) // 每秒检查一次
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// 从延时队列中弹出到期消息
-			msg, err := r.delayQueue.Pop(ctx)
-			if err != nil || msg == nil {
-				continue
-			}
-
-			// 将到期消息发送到普通队列
-			queueKey := fmt.Sprintf("%s:queue:%s", r.keyPrefix, msg.Topic)
-			data, _ := json.Marshal(msg)
-			r.client.LPush(ctx, queueKey, data)
-		}
-	}
 }
 
 // Producer 获取生产者
@@ -110,12 +105,39 @@ func (r *Redis) DelayQueue() contract.DelayQueue {
 
 // HealthCheck 健康检查
 func (r *Redis) HealthCheck() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if r.closed {
+		return fmt.Errorf("redis client is closed")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+
 	return r.client.Ping(ctx).Err()
 }
 
 // Close 关闭连接
 func (r *Redis) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return nil
+	}
+
+	r.closed = true
+	r.cancel()  // 取消上下文
+	r.wg.Wait() // 等待所有goroutine结束
+
+	// 关闭组件
+	if r.producer != nil {
+		r.producer.Close()
+	}
+	if r.consumer != nil {
+		r.consumer.Close()
+	}
+
 	return r.client.Close()
 }

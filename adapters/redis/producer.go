@@ -16,14 +16,14 @@ import (
 
 // Producer Redis生产者
 type Producer struct {
-	client    *redis.Client
+	client    redis.Cmdable
 	meter     metric.Meter
 	logger    *zap.Logger
 	keyPrefix string
 }
 
 // NewRedisProducer 创建Redis生产者
-func NewRedisProducer(client *redis.Client, observer observability.Observer, keyPrefix string) *Producer {
+func NewRedisProducer(client redis.Cmdable, observer observability.Observer, keyPrefix string) *Producer {
 	return &Producer{
 		client:    client,
 		meter:     observer.GetMeter(),

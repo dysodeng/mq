@@ -45,25 +45,39 @@ type Config struct {
 
 // RedisConfig Redis配置
 type RedisConfig struct {
-	// Addr Redis地址
-	Addr string `json:"addr" yaml:"addr"`
-	// Password Redis密码
+	// 连接模式
+	Mode RedisMode `json:"mode" yaml:"mode"`
+
+	// 单机模式配置
+	Addr     string `json:"addr" yaml:"addr"`
 	Password string `json:"password" yaml:"password"`
-	// DB Redis数据库
-	DB int `json:"db" yaml:"db"`
-	// PoolSize 连接池大小
-	PoolSize int `json:"pool_size" yaml:"pool_size"`
-	// MinIdleConns 最小空闲连接数
-	MinIdleConns int `json:"min_idle_conns" yaml:"min_idle_conns"`
-	// MaxConnAge 连接最大存活时间
-	MaxConnAge time.Duration `json:"max_conn_age" yaml:"max_conn_age"`
-	// PoolTimeout 连接池超时时间
-	PoolTimeout time.Duration `json:"pool_timeout" yaml:"pool_timeout"`
-	// IdleTimeout 空闲连接超时时间
-	IdleTimeout time.Duration `json:"idle_timeout" yaml:"idle_timeout"`
-	// IdleCheckFrequency 空闲连接检查频率
+	DB       int    `json:"db" yaml:"db"`
+
+	// 集群模式配置
+	Addrs []string `json:"addrs" yaml:"addrs"`
+
+	// 哨兵模式配置
+	SentinelAddrs    []string `json:"sentinel_addrs" yaml:"sentinel_addrs"`
+	SentinelPassword string   `json:"sentinel_password" yaml:"sentinel_password"`
+	MasterName       string   `json:"master_name" yaml:"master_name"`
+
+	// 连接池配置
+	PoolSize           int           `json:"pool_size" yaml:"pool_size"`
+	MinIdleConns       int           `json:"min_idle_conns" yaml:"min_idle_conns"`
+	MaxConnAge         time.Duration `json:"max_conn_age" yaml:"max_conn_age"`
+	PoolTimeout        time.Duration `json:"pool_timeout" yaml:"pool_timeout"`
+	IdleTimeout        time.Duration `json:"idle_timeout" yaml:"idle_timeout"`
 	IdleCheckFrequency time.Duration `json:"idle_check_frequency" yaml:"idle_check_frequency"`
-	// KeyPrefix Redis key前缀
+
+	// 重试和超时配置
+	MaxRetries      int           `json:"max_retries" yaml:"max_retries"`
+	MinRetryBackoff time.Duration `json:"min_retry_backoff" yaml:"min_retry_backoff"`
+	MaxRetryBackoff time.Duration `json:"max_retry_backoff" yaml:"max_retry_backoff"`
+	DialTimeout     time.Duration `json:"dial_timeout" yaml:"dial_timeout"`
+	ReadTimeout     time.Duration `json:"read_timeout" yaml:"read_timeout"`
+	WriteTimeout    time.Duration `json:"write_timeout" yaml:"write_timeout"`
+
+	// 其他配置
 	KeyPrefix string `json:"key_prefix" yaml:"key_prefix"`
 }
 
@@ -225,30 +239,52 @@ type PoolConfig struct {
 	MaxLifetime time.Duration `json:"max_lifetime" yaml:"max_lifetime"`
 }
 
-// DefaultConfig 默认配置
-func DefaultConfig() *Config {
-	return &Config{
-		Adapter:   AdapterRedis,
-		KeyPrefix: "mq", // 默认全局前缀
-		Redis:     DefaultRedisConfig(),
-		RabbitMQ:  DefaultRabbitMQConfig(),
-		Kafka:     DefaultKafkaConfig(),
-	}
-}
+// RedisMode Redis连接模式
+type RedisMode string
+
+const (
+	RedisModeStandalone RedisMode = "standalone"
+	RedisModeCluster    RedisMode = "cluster"
+	RedisModeSentinel   RedisMode = "sentinel"
+)
 
 // DefaultRedisConfig 默认Redis配置
 func DefaultRedisConfig() RedisConfig {
 	return RedisConfig{
+		Mode:               RedisModeStandalone,
 		Addr:               "localhost:6379",
-		Password:           "",
+		Password:           "123456",
 		DB:                 0,
-		PoolSize:           10,
-		MinIdleConns:       5,
-		MaxConnAge:         30 * time.Minute,
-		PoolTimeout:        4 * time.Second,
+		PoolSize:           100,
+		MinIdleConns:       10,
+		MaxConnAge:         time.Hour,
+		PoolTimeout:        30 * time.Second,
 		IdleTimeout:        5 * time.Minute,
-		IdleCheckFrequency: 1 * time.Minute,
+		IdleCheckFrequency: time.Minute,
+		MaxRetries:         3,
+		MinRetryBackoff:    8 * time.Millisecond,
+		MaxRetryBackoff:    512 * time.Millisecond,
+		DialTimeout:        5 * time.Second,
+		ReadTimeout:        3 * time.Second,
+		WriteTimeout:       3 * time.Second,
 	}
+}
+
+// DefaultRedisClusterConfig 默认Redis集群配置
+func DefaultRedisClusterConfig() RedisConfig {
+	config := DefaultRedisConfig()
+	config.Mode = RedisModeCluster
+	config.Addrs = []string{"localhost:7000", "localhost:7001", "localhost:7002"}
+	return config
+}
+
+// DefaultRedisSentinelConfig 默认Redis哨兵配置
+func DefaultRedisSentinelConfig() RedisConfig {
+	config := DefaultRedisConfig()
+	config.Mode = RedisModeSentinel
+	config.SentinelAddrs = []string{"localhost:26379", "localhost:26380", "localhost:26381"}
+	config.MasterName = "mymaster"
+	return config
 }
 
 // DefaultRabbitMQConfig 默认RabbitMQ配置
