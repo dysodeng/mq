@@ -101,16 +101,22 @@ func (c *Consumer) Subscribe(ctx context.Context, topic string, handler message.
 				c.logger.Info("consumer context cancelled", zap.String("topic", topic))
 				return
 			case d := <-msgs:
-				if err := c.handleMessage(ctx, d, handler); err != nil {
+				if err = c.handleMessage(ctx, d, handler); err != nil {
 					c.logger.Error("handle message failed", zap.Error(err), zap.String("topic", topic))
 					if counter, cerr := c.meter.Int64Counter("consumer_handle_errors"); cerr == nil {
 						counter.Add(ctx, 1)
 					}
 					// 拒绝消息并重新入队
-					d.Nack(false, true)
+					err = d.Nack(false, true)
+					if err != nil {
+						c.logger.Error("nack failed", zap.Error(err), zap.String("topic", topic))
+					}
 				} else {
 					// 确认消息
-					d.Ack(false)
+					err = d.Ack(false)
+					if err != nil {
+						c.logger.Error("ack failed", zap.Error(err), zap.String("topic", topic))
+					}
 					if counter, cerr := c.meter.Int64Counter("consumer_handle_success"); cerr == nil {
 						counter.Add(ctx, 1)
 					}
