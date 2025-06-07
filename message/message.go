@@ -1,38 +1,20 @@
 package message
 
 import (
-	"strings"
-
-	"github.com/google/uuid"
+	"context"
+	"time"
 )
 
-// Message 队列消息体
+// Message 消息结构
 type Message struct {
-	id   string // 消息ID
-	body string // 消息体
-	key  string // 队列key
+	ID       string            `json:"id"`
+	Topic    string            `json:"topic"`
+	Payload  []byte            `json:"payload"`
+	Headers  map[string]string `json:"headers"`
+	Delay    time.Duration     `json:"delay,omitempty"`
+	Retry    int               `json:"retry,omitempty"`
+	CreateAt time.Time         `json:"create_at"`
 }
 
-// NewMessage 创建队列消息体
-func NewMessage(key string, id, body string) Message {
-	if id == "" {
-		id = strings.Replace(uuid.New().String(), "-", "", -1)
-	}
-	return Message{
-		id:   id,
-		body: body,
-		key:  key,
-	}
-}
-
-func (message *Message) Id() string {
-	return message.id
-}
-
-func (message *Message) Body() string {
-	return message.body
-}
-
-func (message *Message) Key() string {
-	return message.key
-}
+// Handler 消息处理函数
+type Handler func(ctx context.Context, msg *Message) error

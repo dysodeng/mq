@@ -1,32 +1,32 @@
-# 消息队列 (Message Queue)
+# Message Queue (MQ)
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dysodeng/mq)](https://goreportcard.com/report/github.com/dysodeng/mq)
 
-一个高性能、可扩展的Go语言消息队列包，支持多种底层实现和企业级特性。
+A high-performance, scalable Go message queue package that supports multiple underlying implementations and enterprise-grade features.
 
-## ✨ 特性
+## ✨ Features
 
-- 🚀 **高性能**: 基于连接池和批处理优化
-- 🔧 **多适配器支持**: 支持Redis、RabbitMQ、Kafka等主流消息队列
-- ⏰ **延时队列**: 基于时间轮算法的高效延时消息处理
-- 📊 **可观测性**: 集成Prometheus指标、OpenTelemetry链路追踪和结构化日志
-- 🏗️ **优雅架构**: 统一接口设计，易于扩展和维护
-- 🛡️ **企业级**: 完善的错误处理、重试机制和健康检查
-- 🔑 **Key前缀支持**: 全局key前缀，支持多租户隔离
-- 🎯 **类型安全**: 强类型设计，适配器验证
-- 📦 **零依赖**: 可选的可观测性组件
+- 🚀 **High Performance**: Optimized with connection pooling and batch processing
+- 🔧 **Multi-Adapter Support**: Redis, RabbitMQ, Kafka and more mainstream message queues
+- ⏰ **Delay Queue**: Efficient delayed message processing based on time wheel algorithm
+- 📊 **Observability**: Integrated Prometheus metrics, OpenTelemetry tracing and structured logging
+- 🏗️ **Elegant Architecture**: Unified interface design, easy to extend and maintain
+- 🛡️ **Enterprise-Grade**: Comprehensive error handling, retry mechanisms and health checks
+- 🔑 **Key Prefix Support**: Global key prefix for multi-tenant isolation
+- 🎯 **Type Safety**: Strong typing with adapter validation
+- 📦 **Zero Dependencies**: Optional observability components
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 安装
+### Installation
 
 ```bash
 go get github.com/dysodeng/mq
 ```
 
-### 基本用法
+### Basic Usage
 ```go
 package main
 
@@ -41,24 +41,24 @@ import (
 )
 
 func main() {
-    // 创建配置
+    // Create configuration
     cfg := config.Config{
         Adapter:   config.AdapterRedis,
         KeyPrefix: "app:mq",
         Redis:     config.DefaultRedisConfig(),
     }
 
-    // 创建MQ工厂
+    // Create MQ factory
     factory := mq.NewFactory(cfg)
     mqInstance, err := factory.CreateMQ()
     if err != nil {
-        log.Fatal("创建MQ失败:", err)
+        log.Fatal("Failed to create MQ:", err)
     }
     defer mqInstance.Close()
 
     ctx := context.Background()
 
-    // 生产者示例
+    // Producer example
     producer := mqInstance.Producer()
     msg := &message.Message{
         Topic:   "test-topic",
@@ -70,43 +70,43 @@ func main() {
 
     err = producer.Send(ctx, msg)
     if err != nil {
-        log.Fatal("发送消息失败:", err)
+        log.Fatal("Failed to send message:", err)
     }
 
-    // 消费者示例
+    // Consumer example
     consumer := mqInstance.Consumer()
     err = consumer.Subscribe(ctx, "test-topic", func(ctx context.Context, msg *message.Message) error {
-        log.Printf("收到消息: %s", string(msg.Payload))
+        log.Printf("Received: %s", string(msg.Payload))
         return nil
     })
     if err != nil {
-        log.Fatal("订阅失败:", err)
+        log.Fatal("Failed to subscribe:", err)
     }
 
-    // 延时队列示例
+    // Delay queue example
     delayMsg := &message.Message{
         Topic:   "delay-topic",
-        Payload: []byte("延时消息"),
+        Payload: []byte("Delayed message"),
     }
     err = mqInstance.DelayQueue().Push(ctx, delayMsg, 10*time.Second)
     if err != nil {
-        log.Fatal("发送延时消息失败:", err)
+        log.Fatal("Failed to send delay message:", err)
     }
 
     time.Sleep(30 * time.Second)
 }
 ```
 
-## 📋 支持的适配器
+### 📋 Supported Adapters
 
-|适配器 | 状态 | 特性|
+|Adapter | Status | Features|
 |--------|--------|---------|
-| Redis| ✅ |基于List的队列，Sorted sets实现延时|
-| RabbitMQ| ✅ |AMQP协议，Exchange路由|
-| Kafka |✅ |分布式流处理，分区支持|
+| Redis| ✅ |List-based queues, Sorted sets for delays|
+| RabbitMQ| ✅ |AMQP protocol, Exchange routing|
+| Kafka |✅ |Distributed streaming, Partitioning|
 
-## ⚙️ 配置
-### Redis 配置
+## ⚙️ Configuration
+### Redis Configuration
 ```go
 cfg := config.Config{
     Adapter:   config.AdapterRedis,
@@ -123,7 +123,7 @@ cfg := config.Config{
     },
 }
 ```
-### RabbitMQ 配置
+### RabbitMQ Configuration
 ```go
 cfg := config.Config{
     Adapter:   config.AdapterRabbitMQ,
@@ -141,7 +141,7 @@ cfg := config.Config{
     },
 }
 ```
-### Kafka 配置
+### Kafka Configuration
 ```go
 cfg := config.Config{
     Adapter:   config.AdapterKafka,
@@ -172,10 +172,10 @@ cfg := config.Config{
 }
 ```
 
-## 📊 可观测性
-该包通过OpenTelemetry和结构化日志提供全面的可观测性支持。
+## 📊 Observability
+The package supports comprehensive observability through OpenTelemetry and structured logging.
 
-### 使用自定义Observer
+### With Custom Observer
 
 ```go
 package main
@@ -202,7 +202,7 @@ func (o *MyObserver) GetLogger() *zap.Logger {
 }
 
 func main() {
-    // 初始化OpenTelemetry和zap日志
+    // Initialize OpenTelemetry and zap logger
     meter := otel.Meter("mq-service")
     logger, _ := zap.NewProduction()
     
@@ -217,7 +217,7 @@ func main() {
         Redis:     config.DefaultRedisConfig(),
     }
 
-    // 使用observer创建工厂
+    // Create factory with observer
     factory := mq.NewFactory(cfg, mq.WithObserver(observer))
     mqInstance, err := factory.CreateMQ()
     if err != nil {
@@ -225,18 +225,18 @@ func main() {
     }
     defer mqInstance.Close()
 
-    // 你的应用逻辑...
+    // Your application logic here...
 }
 ```
 
-### 可用指标
-- mq_messages_sent_total - 发送消息总数
-- mq_messages_received_total - 消费消息总数
-- mq_messages_failed_total - 失败消息总数
-- mq_message_processing_duration_seconds - 消息处理耗时
-- mq_queue_size - 当前队列大小
+### Available Metrics
+- mq_messages_sent_total - Total number of messages sent
+- mq_messages_received_total - Total number of messages received
+- mq_messages_failed_total - Total number of failed messages
+- mq_message_processing_duration_seconds - Message processing duration
+- mq_queue_size - Current queue size
 
-## 🏗️ 架构
+## 🏗️ Architecture
 ```
 ┌─────────────────┐
 │   Application   │
@@ -263,25 +263,25 @@ func main() {
 └─────────────────┘
 ```
 
-## 🔧 高级特性
+## 🔧 Advanced Features
 
-### 延时队列
-延时队列使用时间轮算法实现高效的延时消息处理：
+### Delay Queue
+The delay queue uses a time wheel algorithm for efficient delayed message processing:
 
 ```go
-// 发送延时消息
+// Send a delayed message
 msg := &message.Message{
     Topic:   "notification",
     Payload: []byte("Reminder: Meeting in 1 hour"),
 }
 
-// 1小时后投递
+// Will be delivered after 1 hour
 err := mqInstance.DelayQueue().Push(ctx, msg, time.Hour)
 ```
 
-### 批量操作
+### Batch Operations
 ```go
-// 批量发送消息
+// Batch send messages
 messages := []*message.Message{
     {Topic: "topic1", Payload: []byte("msg1")},
     {Topic: "topic2", Payload: []byte("msg2")},
@@ -290,38 +290,38 @@ messages := []*message.Message{
 err := producer.SendBatch(ctx, messages)
 ```
 
-### 健康检查
+### Health Checks
 ```go
-// 检查MQ健康状态
+// Check MQ health
 if err := mqInstance.HealthCheck(); err != nil {
     log.Printf("MQ health check failed: %v", err)
 }
 ```
 
-## 🧪 测试
+## 🧪 Testing
 ```bash
-# 运行测试
+# Run tests
 go test ./...
 
-# 运行测试并查看覆盖率
+# Run tests with coverage
 go test -cover ./...
 
-# 运行基准测试
+# Run benchmarks
 go test -bench=. ./...
 ```
 
-## 📝 示例
-查看 examples 目录获取更多完整的使用示例：
+## 📝 Examples
+Check out the examples directory for more comprehensive usage examples:
 
-- 基本用法 - 简单的生产者/消费者示例
-- 可观测性 - 完整的可观测性设置
+- Basic Usage - Simple producer/consumer example
+- With Observability - Full observability setup
 
-## 📄 许可证
-本项目采用 MIT 许可证 - 查看 LICENSE 文件了解详情
+## 📄 License
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 致谢
-- [go-redis](https://github.com/go-redis/redis) 提供Redis客户端
-- [amqp091-go](https://github.com/rabbitmq/amqp091-go) 提供RabbitMQ客户端
-- [kafka-go](https://github.com/segmentio/kafka-go) 提供Kafka客户端
-- [OpenTelemetry](https://opentelemetry.io/docs/) 提供可观测性支持
-- [Zap](https://github.com/uber-go/zap) 提供结构化日志
+## 🙏 Acknowledgments
+- [go-redis](https://github.com/go-redis/redis) for Redis client
+- [amqp091-go](https://github.com/rabbitmq/amqp091-go) for RabbitMQ client
+- [kafka-go](https://github.com/segmentio/kafka-go) for Kafka client
+- [OpenTelemetry](https://opentelemetry.io/docs/) for observability
+- [Zap](https://github.com/uber-go/zap) for structured logging

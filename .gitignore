@@ -5,14 +5,75 @@
 *.so
 *.dylib
 
-# Test binary, build with `go test -c`
+# Test binary, built with `go test -c`
 *.test
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# ide
-.idea
-.vscode
+# Dependency directories (remove the comment below to include it)
+# vendor/
 
-cmd
+# Go workspace file
+go.work
+
+# Build output
+build/
+dist/
+bin/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Coverage reports
+coverage.txt
+coverage.html
+coverage.out
+
+# Profiling data
+*.prof
+*.pprof
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificate files
+*.pem
+*.key
+*.crt
+*.p12
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
