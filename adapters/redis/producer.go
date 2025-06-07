@@ -2,83 +2,80 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/serializer"
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
 // Producer Redis生产者
 type Producer struct {
-	client    redis.Cmdable
-	meter     metric.Meter
-	logger    *zap.Logger
-	keyPrefix string
+	client     redis.Cmdable
+	metrics    *observability.MetricsRecorder
+	logger     *zap.Logger
+	config     config.ProducerPerformanceConfig
+	keyPrefix  string
+	serializer serializer.Serializer // 序列化器
+	keys       *KeyGenerator
 }
 
-// NewRedisProducer 创建Redis生产者
-func NewRedisProducer(client redis.Cmdable, observer observability.Observer, keyPrefix string) *Producer {
+func NewRedisProducer(client redis.Cmdable, observer observability.Observer, keyPrefix string, config config.ProducerPerformanceConfig, ser serializer.Serializer, keys *KeyGenerator) *Producer {
+	logger := observer.GetLogger()
+	metrics, err := observability.NewMetricsRecorder(observer, "redis")
+	if err != nil {
+		logger.Warn("Failed to create metrics record for redis", zap.Error(err))
+	}
+
 	return &Producer{
-		client:    client,
-		meter:     observer.GetMeter(),
-		logger:    observer.GetLogger(),
-		keyPrefix: keyPrefix,
+		client:     client,
+		metrics:    metrics,
+		logger:     logger,
+		keyPrefix:  keyPrefix,
+		config:     config,
+		serializer: ser,
+		keys:       keys,
 	}
 }
 
-// Send 发送消息
 func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	start := time.Now()
-	defer func() {
-		if duration, err := p.meter.Float64Histogram("producer_send_duration"); err == nil {
-			duration.Record(ctx, time.Since(start).Seconds())
-		}
-	}()
 
 	if msg.ID == "" {
 		msg.ID = uuid.New().String()
 	}
 	msg.CreateAt = time.Now()
 
-	data, err := json.Marshal(msg)
+	// 使用配置的序列化器
+	data, err := p.serializer.Serialize(msg)
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
-		return fmt.Errorf("marshal message failed: %w", err)
+		return fmt.Errorf("serialize message failed: %w", err)
 	}
 
-	queueKey := fmt.Sprintf("%s:queue:%s", p.keyPrefix, msg.Topic)
+	queueKey := p.keys.QueueKey(msg.Topic)
 	err = p.client.LPush(ctx, queueKey, data).Err()
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
-		p.logger.Error("send message failed", zap.Error(err), zap.String("topic", msg.Topic))
 		return fmt.Errorf("send message failed: %w", err)
 	}
 
-	if counter, cerr := p.meter.Int64Counter("producer_send_total"); cerr == nil {
-		counter.Add(ctx, 1)
+	// 记录指标
+	if p.metrics != nil {
+		p.metrics.RecordMessageLatency(ctx, msg.Topic, time.Since(start))
+		p.metrics.RecordThroughput(ctx, msg.Topic, 1)
+		p.metrics.RecordMessageSent(ctx, msg.Topic)
 	}
-	p.logger.Info("message sent", zap.String("id", msg.ID), zap.String("topic", msg.Topic))
+
 	return nil
 }
 
 // SendDelay 发送延时消息
 func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay time.Duration) error {
 	start := time.Now()
-	defer func() {
-		if duration, err := p.meter.Float64Histogram("producer_delay_send_duration"); err == nil {
-			duration.Record(ctx, time.Since(start).Seconds())
-		}
-	}()
 
 	if msg.ID == "" {
 		msg.ID = uuid.New().String()
@@ -89,16 +86,14 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 	// 直接使用延时队列发送，而不是普通队列
 	executeTime := time.Now().Add(delay).Unix()
 
-	data, err := json.Marshal(msg)
+	data, err := p.serializer.Serialize(msg)
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_delay_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
-		return fmt.Errorf("marshal message failed: %w", err)
+		p.metrics.RecordMessageFailed(ctx, msg.Topic, err)
+		return fmt.Errorf("serialize message failed: %w", err)
 	}
 
-	delayKey := fmt.Sprintf("%s:delay:queue", p.keyPrefix)
-	msgKey := fmt.Sprintf("%s:delay:msg:%s", p.keyPrefix, msg.ID)
+	delayKey := p.keys.DelayQueueKey()
+	msgKey := p.keys.DelayMessageKey(msg.ID)
 
 	// 使用事务确保原子性
 	pipe := p.client.TxPipeline()
@@ -110,22 +105,20 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 
 	_, err = pipe.Exec(ctx)
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_delay_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
+		p.metrics.RecordMessageFailed(ctx, msg.Topic, err)
 		p.logger.Error("send delay message failed", zap.Error(err), zap.String("topic", msg.Topic))
 		return fmt.Errorf("send delay message failed: %w", err)
 	}
 
-	if counter, cerr := p.meter.Int64Counter("producer_delay_send_total"); cerr == nil {
-		counter.Add(ctx, 1)
-	}
-	p.logger.Info("delay message sent", zap.String("id", msg.ID), zap.String("topic", msg.Topic), zap.Duration("delay", delay))
+	// 记录性能指标
+	p.metrics.RecordMessageSent(ctx, msg.Topic)
+	p.metrics.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
 	return nil
 }
 
 // SendBatch 批量发送消息
 func (p *Producer) SendBatch(ctx context.Context, messages []*message.Message) error {
+	start := time.Now()
 	pipe := p.client.Pipeline()
 
 	for _, msg := range messages {
@@ -134,26 +127,32 @@ func (p *Producer) SendBatch(ctx context.Context, messages []*message.Message) e
 		}
 		msg.CreateAt = time.Now()
 
-		data, err := json.Marshal(msg)
+		data, err := p.serializer.Serialize(msg)
 		if err != nil {
-			return fmt.Errorf("marshal message failed: %w", err)
+			p.metrics.RecordMessageFailed(ctx, msg.Topic, err)
+			return fmt.Errorf("serialize message failed: %w", err)
 		}
 
-		queueKey := fmt.Sprintf("%s:queue:%s", p.keyPrefix, msg.Topic)
+		queueKey := p.keys.QueueKey(msg.Topic)
 		pipe.LPush(ctx, queueKey, data)
 	}
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_batch_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
+		// 记录批量发送失败
+		for _, msg := range messages {
+			p.metrics.RecordMessageFailed(ctx, msg.Topic, err)
 		}
 		return fmt.Errorf("batch send failed: %w", err)
 	}
 
-	if counter, cerr := p.meter.Int64Counter("producer_send_total"); cerr == nil {
-		counter.Add(ctx, int64(len(messages)))
+	// 记录成功发送的消息指标
+	for _, msg := range messages {
+		p.metrics.RecordMessageSent(ctx, msg.Topic)
 	}
+	p.metrics.RecordThroughput(ctx, "batch", float64(len(messages)))
+	p.metrics.RecordProcessingTime(ctx, "batch", time.Since(start))
+
 	return nil
 }
 

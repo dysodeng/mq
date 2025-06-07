@@ -2,27 +2,35 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/pool"
+	"github.com/dysodeng/mq/serializer"
 	"github.com/go-redis/redis/v8"
-	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
 
 // Consumer Redis消费者
 type Consumer struct {
 	client      redis.Cmdable
-	meter       metric.Meter
+	metrics     *observability.MetricsRecorder
 	logger      *zap.Logger
 	subscribers map[string]*subscription
 	mu          sync.RWMutex
 	closed      bool
 	keyPrefix   string
+	workerPool  *WorkerPool
+	keys        *KeyGenerator
+	config      config.ConsumerPerformanceConfig
+	serializer  serializer.Serializer // 序列化器
+	messagePool *pool.MessagePool     // 消息对象池
+	bufferPool  *pool.ByteBufferPool  // 缓冲区对象池
 }
 
 // subscription 订阅信息
@@ -34,14 +42,35 @@ type subscription struct {
 }
 
 // NewRedisConsumer 创建Redis消费者
-func NewRedisConsumer(client redis.Cmdable, observer observability.Observer, keyPrefix string) *Consumer {
-	return &Consumer{
+func NewRedisConsumer(client redis.Cmdable, observer observability.Observer, keyPrefix string, config config.ConsumerPerformanceConfig, ser serializer.Serializer, objectPoolConfig config.ObjectPoolConfig, keys *KeyGenerator) *Consumer {
+	metrics, _ := observability.NewMetricsRecorder(observer, "redis")
+	consumer := &Consumer{
 		client:      client,
-		meter:       observer.GetMeter(),
+		metrics:     metrics,
 		logger:      observer.GetLogger(),
 		subscribers: make(map[string]*subscription),
 		keyPrefix:   keyPrefix,
+		config:      config,
+		keys:        keys,
 	}
+
+	// 创建对象池（如果启用）
+	var messagePool *pool.MessagePool
+	var bufferPool *pool.ByteBufferPool
+	if objectPoolConfig.Enabled {
+		messagePool = pool.NewMessagePool()
+		bufferPool = pool.NewByteBufferPool()
+	}
+
+	consumer.serializer = ser
+	consumer.messagePool = messagePool
+	consumer.bufferPool = bufferPool
+
+	// 创建工作池
+	consumer.workerPool = NewWorkerPool(config.WorkerCount, config.BufferSize, consumer.logger, consumer.metrics)
+	consumer.workerPool.Start()
+
+	return consumer
 }
 
 // Subscribe 订阅消息
@@ -50,81 +79,146 @@ func (c *Consumer) Subscribe(ctx context.Context, topic string, handler message.
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return fmt.Errorf("consumer is closed")
+		return errors.New("consumer is closed")
 	}
 
 	if _, exists := c.subscribers[topic]; exists {
-		return fmt.Errorf("topic %s already subscribed", topic)
+		return fmt.Errorf("already subscribed to topic: %s", topic)
 	}
 
-	// 创建订阅上下文
-	subCtx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	sub := &subscription{
 		topic:   topic,
 		handler: handler,
 		cancel:  cancel,
 		done:    make(chan struct{}),
 	}
+
 	c.subscribers[topic] = sub
 
-	// 启动消费协程
-	go c.consumeLoop(subCtx, sub)
+	// 启动消费循环
+	go c.consumeLoop(ctx, sub)
 
-	c.logger.Info("consumer started", zap.String("topic", topic))
+	c.logger.Info("consumer started",
+		zap.String("topic", topic),
+		zap.String("queue_key", c.keys.QueueKey(topic)),
+	)
+
 	return nil
 }
 
-// consumeLoop 消费循环
+// consumeLoop 消费循环（支持批处理和工作池）
 func (c *Consumer) consumeLoop(ctx context.Context, sub *subscription) {
 	defer close(sub.done)
+	defer c.logger.Info("consumer stopped", zap.String("topic", sub.topic))
 
-	queueKey := fmt.Sprintf("%s:queue:%s", c.keyPrefix, sub.topic)
+	retryInterval := c.config.RetryInterval
 
 	for {
-		// 使用BRPop的阻塞特性，当context取消时会自动返回错误
-		result := c.client.BRPop(ctx, 0, queueKey) // 0表示无限等待
-		if result.Err() != nil {
-			if errors.Is(result.Err(), context.Canceled) || errors.Is(result.Err(), context.DeadlineExceeded) {
-				c.logger.Info("consumer stopped", zap.String("topic", sub.topic))
-				return
-			}
-			if errors.Is(result.Err(), redis.Nil) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			// 批量获取消息
+			messages, err := c.batchPopMessages(ctx, sub.topic, c.config.BatchSize)
+			if err != nil {
+				c.logger.Error("consume loop failed", zap.String("topic", sub.topic), zap.Error(err))
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				c.logger.Error("failed to pop messages", zap.Error(err), zap.String("topic", sub.topic))
+				time.Sleep(retryInterval)
 				continue
 			}
-			if result.Err().Error() == "redis: client is closed" {
-				c.logger.Info("redis client closed, stopping consumer", zap.String("topic", sub.topic))
-				return
-			}
-			c.logger.Error("pop message failed", zap.Error(result.Err()), zap.String("topic", sub.topic))
-			continue
-		}
 
-		if len(result.Val()) < 2 {
-			continue
-		}
-
-		msgData := result.Val()[1]
-		var msg message.Message
-		if err := json.Unmarshal([]byte(msgData), &msg); err != nil {
-			c.logger.Error("unmarshal message failed", zap.Error(err), zap.String("topic", sub.topic))
-			if counter, cerr := c.meter.Int64Counter("consumer_unmarshal_errors"); cerr == nil {
-				counter.Add(ctx, 1)
+			// 如果没有消息，短暂休眠
+			if len(messages) == 0 {
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
-			continue
-		}
 
-		// 处理消息
-		if err := sub.handler(ctx, &msg); err != nil {
-			c.logger.Error("handle message failed", zap.Error(err), zap.String("topic", sub.topic), zap.String("msgId", msg.ID))
-			if counter, cerr := c.meter.Int64Counter("consumer_handle_errors"); cerr == nil {
-				counter.Add(ctx, 1)
-			}
-		} else {
-			if counter, cerr := c.meter.Int64Counter("consumer_handle_success"); cerr == nil {
-				counter.Add(ctx, 1)
+			// 将消息提交到工作池处理
+			for _, msg := range messages {
+				msg := msg // 避免闭包问题
+				task := &Task{
+					Message: msg,
+					Handler: sub.handler,
+					Topic:   sub.topic,
+				}
+				c.workerPool.Submit(task)
 			}
 		}
 	}
+}
+
+// batchPopMessages 批量弹出消息
+func (c *Consumer) batchPopMessages(ctx context.Context, topic string, batchSize int) ([]*message.Message, error) {
+	queueKey := c.keys.QueueKey(topic)
+	var messages []*message.Message
+
+	// 使用阻塞弹出获取第一条消息
+	result, err := c.client.BRPop(ctx, 0, queueKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return messages, nil
+		}
+		return nil, fmt.Errorf("failed to pop message from queue %s: %w", queueKey, err)
+	}
+
+	// 处理第一条消息
+	if len(result) == 2 {
+		rawMessage := result[1]
+
+		var msg *message.Message
+		if c.messagePool != nil {
+			msg = c.messagePool.Get()
+		} else {
+			msg = &message.Message{Headers: make(map[string]string)}
+		}
+
+		if err = c.serializer.Deserialize([]byte(rawMessage), msg); err != nil {
+			c.logger.Error("failed to deserialize message", zap.Error(err))
+			// 归还对象到池
+			if c.messagePool != nil {
+				c.messagePool.Put(msg)
+			}
+			return nil, fmt.Errorf("deserialize message failed: %w", err)
+		}
+
+		messages = append(messages, msg)
+	}
+
+	// 继续获取剩余消息直到达到批处理大小
+	for len(messages) < batchSize {
+		res, err := c.client.RPop(ctx, queueKey).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				// 没有更多消息，退出循环
+				break
+			}
+			c.logger.Error("failed to pop additional message", zap.Error(err))
+			break
+		}
+
+		var msg *message.Message
+		if c.messagePool != nil {
+			msg = c.messagePool.Get()
+		} else {
+			msg = &message.Message{Headers: make(map[string]string)}
+		}
+		if err = c.serializer.Deserialize([]byte(res), msg); err != nil {
+			c.logger.Error("failed to deserialize message", zap.Error(err))
+			// 归还对象到池
+			if c.messagePool != nil {
+				c.messagePool.Put(msg)
+			}
+			return nil, fmt.Errorf("deserialize message failed: %w", err)
+		}
+
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
 }
 
 // Unsubscribe 取消订阅
@@ -141,19 +235,45 @@ func (c *Consumer) Unsubscribe(topic string) error {
 	return nil
 }
 
+// unsubscribe 内部取消订阅方法（不加锁）
+func (c *Consumer) unsubscribe(topic string) {
+	if sub, exists := c.subscribers[topic]; exists {
+		sub.cancel()
+		<-sub.done // 等待消费协程结束
+		delete(c.subscribers, topic)
+		c.logger.Info("unsubscribed", zap.String("topic", topic))
+	}
+}
+
 // Close 关闭消费者
 func (c *Consumer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.closed = true
-
-	// 关闭所有订阅
-	for topic, sub := range c.subscribers {
-		sub.cancel()
-		<-sub.done // 等待消费协程结束
-		delete(c.subscribers, topic)
+	if c.closed {
+		return nil
 	}
 
+	c.closed = true
+
+	// 停止所有订阅
+	for topic := range c.subscribers {
+		c.unsubscribe(topic)
+	}
+
+	// 停止工作池
+	if c.workerPool != nil {
+		c.workerPool.Stop()
+	}
+
+	c.logger.Info("redis consumer closed")
 	return nil
+}
+
+// GetWorkerPoolStats 获取工作池统计信息
+func (c *Consumer) GetWorkerPoolStats() (queueSize, queueCapacity int) {
+	if c.workerPool == nil {
+		return 0, 0
+	}
+	return c.workerPool.Stats()
 }

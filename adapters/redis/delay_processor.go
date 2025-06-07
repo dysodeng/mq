@@ -2,10 +2,12 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/dysodeng/mq/serializer"
 
 	"github.com/go-redis/redis/v8"
 
@@ -16,9 +18,12 @@ import (
 
 // DelayProcessor 延时消息处理器
 type DelayProcessor struct {
-	client    Client
-	logger    *zap.Logger
-	keyPrefix string
+	client     Client
+	metrics    *observability.MetricsRecorder
+	logger     *zap.Logger
+	keys       *KeyGenerator
+	serializer serializer.Serializer
+	keyPrefix  string
 
 	// 性能优化配置
 	batchSize    int           // 批处理大小
@@ -27,10 +32,14 @@ type DelayProcessor struct {
 }
 
 // NewDelayProcessor 创建延时消息处理器
-func NewDelayProcessor(client Client, observer observability.Observer, keyPrefix string) *DelayProcessor {
+func NewDelayProcessor(client Client, observer observability.Observer, keyPrefix string, serializer serializer.Serializer, keys *KeyGenerator) *DelayProcessor {
+	metrics, _ := observability.NewMetricsRecorder(observer, "redis")
 	return &DelayProcessor{
 		client:       client,
+		metrics:      metrics,
 		logger:       observer.GetLogger(),
+		keys:         keys,
+		serializer:   serializer,
 		keyPrefix:    keyPrefix,
 		batchSize:    100,
 		pollInterval: time.Second,
@@ -67,7 +76,7 @@ func (dp *DelayProcessor) Start(ctx context.Context) {
 // processExpiredMessages 处理到期消息
 func (dp *DelayProcessor) processExpiredMessages(ctx context.Context) (int, error) {
 	now := time.Now().Unix()
-	delayKey := fmt.Sprintf("%s:delay:queue", dp.keyPrefix)
+	delayKey := dp.keys.DelayQueueKey()
 
 	// 批量获取到期消息
 	result := dp.client.ZRangeByScore(ctx, delayKey, &redis.ZRangeBy{
@@ -102,8 +111,9 @@ func (dp *DelayProcessor) processExpiredMessages(ctx context.Context) (int, erro
 
 // processMessage 处理单个消息
 func (dp *DelayProcessor) processMessage(ctx context.Context, msgID string) error {
-	msgKey := fmt.Sprintf("%s:delay:msg:%s", dp.keyPrefix, msgID)
-	delayKey := fmt.Sprintf("%s:delay:queue", dp.keyPrefix)
+	start := time.Now()
+	delayKey := dp.keys.DelayQueueKey()
+	msgKey := dp.keys.DelayMessageKey(msgID)
 
 	// 使用Lua脚本确保原子性
 	luaScript := `
@@ -128,6 +138,9 @@ func (dp *DelayProcessor) processMessage(ctx context.Context, msgID string) erro
 	result := dp.client.Eval(ctx, luaScript, []string{msgKey, delayKey}, msgID)
 	msgData, err := result.Result()
 	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil // 消息已被处理
+		}
 		return fmt.Errorf("eval lua script failed: %w", err)
 	}
 
@@ -137,14 +150,27 @@ func (dp *DelayProcessor) processMessage(ctx context.Context, msgID string) erro
 
 	// 解析消息
 	var msg message.Message
-	if err := json.Unmarshal([]byte(msgData.(string)), &msg); err != nil {
-		return fmt.Errorf("unmarshal message failed: %w", err)
+	if err = dp.serializer.Deserialize([]byte(msgData.(string)), &msg); err != nil {
+		return fmt.Errorf("deserialize message failed: %w", err)
 	}
 
 	// 将消息发送到普通队列
-	queueKey := fmt.Sprintf("%s:queue:%s", dp.keyPrefix, msg.Topic)
-	data, _ := json.Marshal(msg)
-	return dp.client.LPush(ctx, queueKey, data).Err()
+	queueKey := dp.keys.QueueKey(msg.Topic)
+	data, err := dp.serializer.Serialize(&msg)
+	if err != nil {
+		dp.metrics.RecordMessageFailed(ctx, msg.Topic, err)
+		return fmt.Errorf("serialize message failed: %w", err)
+	}
+
+	if err = dp.client.LPush(ctx, queueKey, data).Err(); err != nil {
+		dp.metrics.RecordMessageFailed(ctx, msg.Topic, err)
+		return fmt.Errorf("push message failed: %w", err)
+	}
+
+	dp.metrics.RecordMessageSent(ctx, msg.Topic)
+	dp.metrics.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
+
+	return nil
 }
 
 // calculateBackoff 计算退避时间
