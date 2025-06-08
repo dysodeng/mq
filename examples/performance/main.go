@@ -58,7 +58,7 @@ func initOpenTelemetry(ctx context.Context) (func(), error) {
 
 	// 初始化OTLP Metrics导出器
 	metricsExporter, err := otlpmetrichttp.New(ctx,
-		otlpmetrichttp.WithEndpointURL("http://otel-collector.huaxisy.com"),
+		otlpmetrichttp.WithEndpointURL("http://localhost:4318"),
 		otlpmetrichttp.WithInsecure(),
 	)
 	if err != nil {
