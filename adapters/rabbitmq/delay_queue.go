@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/serializer"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
@@ -14,74 +16,155 @@ import (
 
 // DelayQueue RabbitMQ延时队列实现 - 使用x-delayed-message插件
 type DelayQueue struct {
-	conn      *amqp.Connection
-	ch        *amqp.Channel
-	meter     metric.Meter
-	logger    *zap.Logger
-	keyPrefix string
+	pool       *ConnectionPool
+	meter      metric.Meter
+	logger     *zap.Logger
+	config     config.RabbitMQConfig
+	serializer serializer.Serializer
+	recorder   *observability.MetricsRecorder
+	keyGen     *KeyGenerator
 }
 
 // NewRabbitDelayQueue 创建RabbitMQ延时队列
-func NewRabbitDelayQueue(conn *amqp.Connection, observer observability.Observer, keyPrefix string) *DelayQueue {
-	ch, err := conn.Channel()
-	if err != nil {
-		observer.GetLogger().Error("failed to create channel", zap.Error(err))
-		return nil
-	}
-
+func NewRabbitDelayQueue(
+	pool *ConnectionPool,
+	observer observability.Observer,
+	recorder *observability.MetricsRecorder,
+	config config.RabbitMQConfig,
+	ser serializer.Serializer,
+	keyGen *KeyGenerator,
+) *DelayQueue {
 	return &DelayQueue{
-		conn:      conn,
-		ch:        ch,
-		meter:     observer.GetMeter(),
-		logger:    observer.GetLogger(),
-		keyPrefix: keyPrefix,
+		pool:       pool,
+		meter:      observer.GetMeter(),
+		logger:     observer.GetLogger(),
+		config:     config,
+		serializer: ser,
+		recorder:   recorder,
+		keyGen:     keyGen,
 	}
 }
 
-// Push 推送延时消息 - 使用x-delayed-message插件
+// Push 推送延时消息
 func (dq *DelayQueue) Push(ctx context.Context, msg *message.Message, delay time.Duration) error {
-	// 使用生产者的SendDelay方法，该方法已更新为使用x-delayed-message插件
-	producer := NewRabbitProducer(dq.conn, &observerWrapper{dq.meter, dq.logger}, dq.keyPrefix)
-	defer producer.Close()
-	return producer.SendDelay(ctx, msg, delay)
-}
+	start := time.Now()
 
-// observerWrapper 包装器，用于传递meter和logger
-type observerWrapper struct {
-	meter  metric.Meter
-	logger *zap.Logger
-}
+	// 获取通道
+	ch, err := dq.pool.GetChannel(ctx)
+	if err != nil {
+		dq.recorder.RecordProcessingError(ctx, msg.Topic, "get_channel_error")
+		return fmt.Errorf("failed to get channel: %w", err)
+	}
+	defer dq.pool.ReturnChannel(ch)
 
-func (o *observerWrapper) GetMeter() metric.Meter {
-	return o.meter
-}
+	// 设置延时交换机
+	delayExchange := dq.keyGen.DelayExchangeName()
+	err = ch.ExchangeDeclare(
+		delayExchange,
+		"x-delayed-message",
+		true,
+		false,
+		false,
+		false,
+		map[string]interface{}{
+			"x-delayed-type": "direct",
+		},
+	)
+	if err != nil {
+		dq.recorder.RecordProcessingError(ctx, msg.Topic, "declare_exchange_error")
+		return fmt.Errorf("failed to declare delay exchange: %w", err)
+	}
 
-func (o *observerWrapper) GetLogger() *zap.Logger {
-	return o.logger
+	// 声明延时队列
+	delayQueueName := dq.keyGen.DelayQueueName(msg.Topic)
+	_, err = ch.QueueDeclare(
+		delayQueueName,
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		dq.recorder.RecordProcessingError(ctx, msg.Topic, "declare_queue_error")
+		return fmt.Errorf("failed to declare delay queue: %w", err)
+	}
+
+	// 绑定队列到延时交换机
+	err = ch.QueueBind(
+		delayQueueName,
+		msg.Topic, // routing key
+		delayExchange,
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		dq.recorder.RecordProcessingError(ctx, msg.Topic, "bind_queue_error")
+		return fmt.Errorf("failed to bind delay queue: %w", err)
+	}
+
+	// 序列化消息
+	body, err := dq.serializer.Serialize(msg)
+	if err != nil {
+		dq.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
+		return fmt.Errorf("failed to serialize message: %w", err)
+	}
+
+	// 构建AMQP头部
+	headers := make(map[string]interface{})
+	for k, v := range msg.Headers {
+		headers[k] = v
+	}
+	headers["x-delay"] = int64(delay / time.Millisecond)
+
+	// 发布延时消息
+	err = ch.PublishWithContext(
+		ctx,
+		delayExchange,
+		msg.Topic,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  dq.serializer.ContentType(),
+			Body:         body,
+			Headers:      headers,
+			DeliveryMode: amqp.Persistent,
+			MessageId:    msg.ID,
+			Timestamp:    time.Now(),
+		},
+	)
+	if err != nil {
+		dq.recorder.RecordProcessingError(ctx, msg.Topic, "publish_error")
+		return fmt.Errorf("failed to publish delay message: %w", err)
+	}
+
+	// 记录成功指标
+	dq.recorder.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
+	dq.recorder.RecordMessageSent(ctx, msg.Topic)
+	dq.logger.Debug("delay message pushed",
+		zap.String("topic", msg.Topic),
+		zap.String("message_id", msg.ID),
+		zap.Duration("delay", delay))
+
+	return nil
 }
 
 // Pop 弹出到期消息 (RabbitMQ通过x-delayed-message插件自动处理)
 func (dq *DelayQueue) Pop(ctx context.Context) (*message.Message, error) {
-	// x-delayed-message插件会自动将到期的延时消息路由到目标队列
-	// 消费者直接从目标队列消费即可，无需主动调用此方法
-	return nil, fmt.Errorf("rabbitmq delay queue with x-delayed-message uses automatic routing")
+	return nil, fmt.Errorf("rabbitmq delay queue uses automatic routing, use consumer to receive messages")
 }
 
 // Remove 移除消息
 func (dq *DelayQueue) Remove(ctx context.Context, msgID string) error {
-	// x-delayed-message插件中移除延时消息需要特殊处理
-	// 通常在消息发送后无法直接移除，需要在应用层面处理
-	return fmt.Errorf("rabbitmq delay queue with x-delayed-message does not support message removal")
+	return fmt.Errorf("rabbitmq delay queue does not support message removal after publishing")
 }
 
 // Size 获取队列大小
 func (dq *DelayQueue) Size(ctx context.Context) (int64, error) {
-	// 获取延时队列大小需要通过RabbitMQ管理API
-	// x-delayed-message插件的延时消息在交换机内部暂存
 	return 0, fmt.Errorf("rabbitmq delay queue size check requires management API")
 }
 
 // Close 关闭延时队列
 func (dq *DelayQueue) Close() error {
-	return dq.ch.Close()
+	return nil // 连接池会统一管理连接关闭
 }

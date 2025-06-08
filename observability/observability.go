@@ -32,7 +32,7 @@ type MetricsRecorder struct {
 	processingTime   metric.Float64Histogram
 
 	// 增强指标
-	connectionPoolSize metric.Int64UpDownCounter
+	connectionPoolSize metric.Int64Gauge
 	messageLatency     metric.Float64Histogram
 	queueBacklog       metric.Int64UpDownCounter
 	errorRate          metric.Float64Gauge
@@ -79,7 +79,7 @@ func NewMetricsRecorder(observer Observer, adapter string) (*MetricsRecorder, er
 	}
 
 	// 创建增强指标
-	connectionPoolSize, err := meter.Int64UpDownCounter(
+	connectionPoolSize, err := meter.Int64Gauge(
 		"mq_connection_pool_size",
 		metric.WithDescription("Current connection pool size"),
 	)
@@ -231,7 +231,7 @@ func (m *MetricsRecorder) RecordQueueSize(ctx context.Context, topic string, siz
 
 // RecordConnectionPoolSize 记录连接池大小
 func (m *MetricsRecorder) RecordConnectionPoolSize(ctx context.Context, size int64) {
-	m.connectionPoolSize.Add(ctx, size, metric.WithAttributes(
+	m.connectionPoolSize.Record(ctx, size, metric.WithAttributes(
 		attribute.String("adapter", m.adapter),
 	))
 }

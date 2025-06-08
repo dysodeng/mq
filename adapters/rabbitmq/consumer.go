@@ -2,12 +2,14 @@ package rabbitmq
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/serializer"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
@@ -15,30 +17,44 @@ import (
 
 // Consumer RabbitMQ消费者
 type Consumer struct {
-	conn        *amqp.Connection
-	ch          *amqp.Channel
+	pool        *ConnectionPool
 	meter       metric.Meter
 	logger      *zap.Logger
-	subscribers map[string]chan bool // 用于取消订阅
+	subscribers map[string]*subscription
 	mu          sync.RWMutex
-	keyPrefix   string
+	config      config.RabbitMQConfig
+	serializer  serializer.Serializer
+	recorder    *observability.MetricsRecorder
+	keyGen      *KeyGenerator
+}
+
+// subscription 订阅信息
+type subscription struct {
+	cancel  context.CancelFunc
+	ch      *amqp.Channel
+	topic   string
+	handler message.Handler
+	ctx     context.Context
 }
 
 // NewRabbitConsumer 创建RabbitMQ消费者
-func NewRabbitConsumer(conn *amqp.Connection, observer observability.Observer, keyPrefix string) *Consumer {
-	ch, err := conn.Channel()
-	if err != nil {
-		observer.GetLogger().Error("failed to create channel", zap.Error(err))
-		return nil
-	}
-
+func NewRabbitConsumer(
+	pool *ConnectionPool,
+	observer observability.Observer,
+	recorder *observability.MetricsRecorder,
+	config config.RabbitMQConfig,
+	ser serializer.Serializer,
+	keyGen *KeyGenerator,
+) *Consumer {
 	return &Consumer{
-		conn:        conn,
-		ch:          ch,
+		pool:        pool,
 		meter:       observer.GetMeter(),
 		logger:      observer.GetLogger(),
-		subscribers: make(map[string]chan bool),
-		keyPrefix:   keyPrefix,
+		subscribers: make(map[string]*subscription),
+		config:      config,
+		serializer:  ser,
+		recorder:    recorder,
+		keyGen:      keyGen,
 	}
 }
 
@@ -47,94 +63,218 @@ func (c *Consumer) Subscribe(ctx context.Context, topic string, handler message.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	queueName := fmt.Sprintf("%s.%s", c.keyPrefix, topic)
+	// 检查是否已订阅
+	if _, exists := c.subscribers[topic]; exists {
+		return fmt.Errorf("topic %s already subscribed", topic)
+	}
+
+	// 获取通道
+	ch, err := c.pool.GetChannel(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get channel: %w", err)
+	}
+
+	// 设置通道配置
+	if err := c.setupChannel(ch, topic); err != nil {
+		c.pool.ReturnChannel(ch)
+		return fmt.Errorf("failed to setup channel: %w", err)
+	}
+
+	// 创建订阅上下文
+	subCtx, cancel := context.WithCancel(ctx)
+	sub := &subscription{
+		cancel:  cancel,
+		ch:      ch,
+		topic:   topic,
+		handler: handler,
+		ctx:     subCtx,
+	}
+
+	c.subscribers[topic] = sub
+
+	// 启动消费协程
+	go c.consume(sub)
+
+	// 启动队列积压监控
+	go c.monitorQueueBacklog(subCtx, topic, c.keyGen.QueueName(topic))
+
+	c.logger.Info("consumer subscribed", zap.String("topic", topic))
+	return nil
+}
+
+// setupChannel 设置通道配置
+func (c *Consumer) setupChannel(ch *amqp.Channel, topic string) error {
+	// queueName := fmt.Sprintf("%s.%s", c.keyPrefix, topic)
+	queueName := c.keyGen.QueueName(topic)
+	exchangeName := c.keyGen.ExchangeName()
+
+	// 声明交换机
+	err := ch.ExchangeDeclare(
+		exchangeName,
+		c.config.ExchangeType,
+		true,  // durable
+		false, // auto-delete
+		false, // internal
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare exchange: %w", err)
+	}
 
 	// 声明队列
-	_, err := c.ch.QueueDeclare(
-		queueName, // name
-		true,      // durable
-		false,     // delete when unused
-		false,     // exclusive
-		false,     // no-wait
-		nil,       // arguments
+	_, err = ch.QueueDeclare(
+		queueName,
+		c.config.QueueDurable,
+		c.config.QueueAutoDelete,
+		c.config.QueueExclusive,
+		c.config.QueueNoWait,
+		nil,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
 
+	// 绑定队列到交换机
+	err = ch.QueueBind(
+		queueName,
+		topic,
+		exchangeName,
+		false,
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to bind queue: %w", err)
+	}
+
 	// 设置QoS
-	err = c.ch.Qos(
-		1,     // prefetch count
-		0,     // prefetch size
-		false, // global
+	err = ch.Qos(
+		c.config.QoS,
+		0,
+		false,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to set QoS: %w", err)
 	}
 
-	// 开始消费
-	msgs, err := c.ch.Consume(
-		topic, // queue
-		"",    // consumer
-		false, // auto-ack
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
-		nil,   // args
-	)
-	if err != nil {
-		return fmt.Errorf("failed to register consumer: %w", err)
-	}
-
-	// 创建取消通道
-	stopCh := make(chan bool)
-	c.subscribers[topic] = stopCh
-
-	// 启动消费协程
-	go func() {
-		for {
-			select {
-			case <-stopCh:
-				c.logger.Info("consumer stopped", zap.String("topic", topic))
-				return
-			case <-ctx.Done():
-				c.logger.Info("consumer context cancelled", zap.String("topic", topic))
-				return
-			case d := <-msgs:
-				if err = c.handleMessage(ctx, d, handler); err != nil {
-					c.logger.Error("handle message failed", zap.Error(err), zap.String("topic", topic))
-					if counter, cerr := c.meter.Int64Counter("consumer_handle_errors"); cerr == nil {
-						counter.Add(ctx, 1)
-					}
-					// 拒绝消息并重新入队
-					err = d.Nack(false, true)
-					if err != nil {
-						c.logger.Error("nack failed", zap.Error(err), zap.String("topic", topic))
-					}
-				} else {
-					// 确认消息
-					err = d.Ack(false)
-					if err != nil {
-						c.logger.Error("ack failed", zap.Error(err), zap.String("topic", topic))
-					}
-					if counter, cerr := c.meter.Int64Counter("consumer_handle_success"); cerr == nil {
-						counter.Add(ctx, 1)
-					}
-				}
-			}
-		}
-	}()
-
-	c.logger.Info("consumer started", zap.String("topic", topic))
 	return nil
 }
 
-// handleMessage 处理消息
-func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, handler message.Handler) error {
-	var msg message.Message
-	err := json.Unmarshal(delivery.Body, &msg)
+// consume 消费消息
+func (c *Consumer) consume(sub *subscription) {
+	defer func() {
+		c.pool.ReturnChannel(sub.ch)
+		c.logger.Info("consumer stopped", zap.String("topic", sub.topic))
+	}()
+
+	queueName := c.keyGen.QueueName(sub.topic)
+	// queueName := fmt.Sprintf("%s.%s", c.keyPrefix, sub.topic)
+
+	// 开始消费
+	msgs, err := sub.ch.Consume(
+		queueName,
+		"",
+		false, // auto-ack
+		false,
+		false,
+		false,
+		nil,
+	)
 	if err != nil {
-		return fmt.Errorf("unmarshal message failed: %w", err)
+		c.logger.Error("failed to start consuming", zap.Error(err), zap.String("topic", sub.topic))
+		return
+	}
+
+	// 处理消息
+	for {
+		select {
+		case <-sub.ctx.Done():
+			return
+		case d, ok := <-msgs:
+			if !ok {
+				c.logger.Warn("message channel closed", zap.String("topic", sub.topic))
+				return
+			}
+			c.handleMessage(sub.ctx, d, sub.handler, sub.topic)
+		}
+	}
+}
+
+// 队列积压监控方法
+func (c *Consumer) monitorQueueBacklog(ctx context.Context, topic, queueName string) {
+	ticker := time.NewTicker(30 * time.Second) // 每30秒检查一次
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ch, err := c.pool.GetChannel(ctx)
+			if err != nil {
+				c.recorder.LogWarn("failed to get channel for queue monitoring",
+					zap.Error(err), zap.String("topic", topic))
+				continue
+			}
+
+			queue, err := ch.QueueDeclare(
+				queueName,
+				c.config.QueueDurable,    // durable
+				c.config.QueueAutoDelete, // auto-delete
+				c.config.QueueExclusive,  // exclusive
+				c.config.QueueNoWait,     // no-wait
+				nil,                      // arguments
+			)
+			if err != nil {
+				c.recorder.LogWarn("failed to declare queue for monitoring",
+					zap.Error(err),
+					zap.String("topic", topic),
+					zap.String("queue", queueName))
+				c.pool.ReturnChannel(ch)
+				continue
+			}
+
+			// 记录队列积压
+			c.recorder.RecordQueueBacklog(ctx, topic, int64(queue.Messages))
+			c.recorder.RecordQueueSize(ctx, topic, int64(queue.Messages))
+
+			// 如果队列积压过多，记录警告
+			if queue.Messages > 1000 {
+				c.recorder.LogWarn("high queue backlog detected",
+					zap.String("topic", topic),
+					zap.String("queue", queueName),
+					zap.Int("messages", queue.Messages))
+			}
+
+			c.pool.ReturnChannel(ch)
+		}
+	}
+}
+
+// handleMessage 处理消息
+func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, handler message.Handler, topic string) {
+	start := time.Now()
+
+	retryCount := 0
+	maxRetries := 3
+
+	// 记录消息接收
+	c.recorder.RecordMessageReceived(ctx, topic)
+
+	// 反序列化消息
+	var msg message.Message
+	err := c.serializer.Deserialize(delivery.Body, &msg)
+	if err != nil {
+		c.logger.Error("failed to deserialize message", zap.Error(err), zap.String("topic", topic))
+		c.recorder.RecordProcessingError(ctx, topic, "deserialize_error") // 修复：使用正确的指标方法
+		_ = delivery.Nack(false, false)                                   // 拒绝消息，不重新入队
+		return
+	}
+
+	// 计算消息延迟（从创建到处理的时间）
+	if !msg.CreateAt.IsZero() {
+		latency := time.Since(msg.CreateAt)
+		c.recorder.RecordMessageLatency(ctx, topic, latency)
 	}
 
 	// 转换头部信息
@@ -147,7 +287,41 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 		}
 	}
 
-	return handler(ctx, &msg)
+	// 重试逻辑
+	for retryCount <= maxRetries {
+		// 调用处理器
+		err = handler(ctx, &msg)
+		if err == nil {
+			break // 成功处理
+		}
+
+		retryCount++
+		c.recorder.RecordRetryAttempt(ctx, topic, retryCount)
+		c.recorder.LogWarn("message handler failed, retrying",
+			zap.Error(err),
+			zap.String("topic", topic),
+			zap.Int("retry_count", retryCount))
+
+		if retryCount > maxRetries {
+			c.recorder.RecordProcessingError(ctx, topic, "handler_error")
+			_ = delivery.Nack(false, true) // 拒绝消息并重新入队
+			return
+		}
+
+		// 重试延迟
+		time.Sleep(time.Duration(retryCount) * time.Second)
+	}
+
+	// 确认消息
+	err = delivery.Ack(false)
+	if err != nil {
+		c.logger.Error("failed to ack message", zap.Error(err), zap.String("topic", topic))
+		return
+	}
+
+	// 记录成功指标
+	c.recorder.RecordProcessingTime(ctx, topic, time.Since(start))
+	c.recorder.RecordThroughput(ctx, topic, 1)
 }
 
 // Unsubscribe 取消订阅
@@ -155,11 +329,16 @@ func (c *Consumer) Unsubscribe(topic string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if stopCh, exists := c.subscribers[topic]; exists {
-		close(stopCh)
-		delete(c.subscribers, topic)
-		c.logger.Info("unsubscribed", zap.String("topic", topic))
+	sub, exists := c.subscribers[topic]
+	if !exists {
+		return fmt.Errorf("topic %s not subscribed", topic)
 	}
+
+	// 取消订阅
+	sub.cancel()
+	delete(c.subscribers, topic)
+
+	c.logger.Info("unsubscribed", zap.String("topic", topic))
 	return nil
 }
 
@@ -169,10 +348,11 @@ func (c *Consumer) Close() error {
 	defer c.mu.Unlock()
 
 	// 关闭所有订阅
-	for topic, stopCh := range c.subscribers {
-		close(stopCh)
+	for topic, sub := range c.subscribers {
+		sub.cancel()
 		delete(c.subscribers, topic)
+		c.logger.Info("closed subscription", zap.String("topic", topic))
 	}
 
-	return c.ch.Close()
+	return nil
 }

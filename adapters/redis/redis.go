@@ -6,11 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dysodeng/mq/serializer"
-
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/serializer"
 )
 
 // Redis Redis消息队列实现
@@ -34,16 +33,16 @@ type Redis struct {
 }
 
 // NewRedisMQ 创建Redis消息队列
-func NewRedisMQ(config config.RedisConfig, observer observability.Observer, keyPrefix string) (*Redis, error) {
+func NewRedisMQ(cfg config.RedisConfig, observer observability.Observer, keyPrefix string) (*Redis, error) {
 	if keyPrefix == "" {
-		keyPrefix = "mq"
+		keyPrefix = config.DefaultKeyPrefix
 	}
 
 	// 设置默认值
-	config.SetDefaults()
+	cfg.SetDefaults()
 
 	// 创建客户端工厂
-	clientFactory := NewClientFactory(config)
+	clientFactory := NewClientFactory(cfg)
 	client, err := clientFactory.CreateClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create redis client: %w", err)
@@ -66,8 +65,8 @@ func NewRedisMQ(config config.RedisConfig, observer observability.Observer, keyP
 	}()
 
 	// 获取配置
-	serializationConfig := config.GetSerializationConfig()
-	objectPoolConfig := config.GetObjectPoolConfig()
+	serializationConfig := cfg.GetSerializationConfig()
+	objectPoolConfig := cfg.GetObjectPoolConfig()
 
 	// 创建序列化器
 	ser, err := serializer.NewSerializer(serializer.Type(serializationConfig.Type))
@@ -80,8 +79,8 @@ func NewRedisMQ(config config.RedisConfig, observer observability.Observer, keyP
 	keys := NewKeyGenerator(keyPrefix)
 
 	// 创建组件（传递序列化和对象池配置）
-	producer := NewRedisProducer(client, observer, keyPrefix, config.GetProducerConfig(), ser, keys)
-	consumer := NewRedisConsumer(client, observer, keyPrefix, config.GetConsumerConfig(), ser, objectPoolConfig, keys)
+	producer := NewRedisProducer(client, observer, keyPrefix, cfg.GetProducerConfig(), ser, keys)
+	consumer := NewRedisConsumer(client, observer, keyPrefix, cfg.GetConsumerConfig(), ser, objectPoolConfig, keys)
 	delayQueue := NewRedisDelayQueue(client, observer, keyPrefix, ser, keys)
 
 	// 创建延时处理器
@@ -101,7 +100,7 @@ func NewRedisMQ(config config.RedisConfig, observer observability.Observer, keyP
 		delayQueue:     delayQueue,
 		recorder:       recorder,
 		keyPrefix:      keyPrefix,
-		config:         config,
+		config:         cfg,
 		delayProcessor: delayProcessor,
 		ctx:            mainCtx,
 		cancel:         mainCancel,

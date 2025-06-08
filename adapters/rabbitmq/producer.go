@@ -2,12 +2,14 @@ package rabbitmq
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/serializer"
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel/metric"
@@ -16,37 +18,69 @@ import (
 
 // Producer RabbitMQ生产者
 type Producer struct {
-	conn      *amqp.Connection
-	ch        *amqp.Channel
-	meter     metric.Meter
-	logger    *zap.Logger
-	keyPrefix string
+	connectionPool *ConnectionPool
+	meter          metric.Meter
+	logger         *zap.Logger
+	producerConfig config.ProducerPerformanceConfig
+	config         config.RabbitMQConfig // 添加这个字段
+	serializer     serializer.Serializer
+	recorder       *observability.MetricsRecorder
+	keyGen         *KeyGenerator
+
+	// 批量发送
+	batchCh    chan *message.Message
+	batchMu    sync.Mutex
+	batch      []*message.Message
+	flushTimer *time.Timer
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // NewRabbitProducer 创建RabbitMQ生产者
-func NewRabbitProducer(conn *amqp.Connection, observer observability.Observer, keyPrefix string) *Producer {
-	ch, err := conn.Channel()
-	if err != nil {
-		observer.GetLogger().Error("failed to create channel", zap.Error(err))
-		return nil
+func NewRabbitProducer(
+	pool *ConnectionPool,
+	observer observability.Observer,
+	recorder *observability.MetricsRecorder,
+	config config.RabbitMQConfig, // 添加这个参数
+	ser serializer.Serializer,
+	keyGen *KeyGenerator,
+) *Producer {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	producerConfig := config.GetProducerConfig()
+
+	p := &Producer{
+		connectionPool: pool,
+		meter:          observer.GetMeter(),
+		logger:         observer.GetLogger(),
+		recorder:       recorder,
+		keyGen:         keyGen,
+		producerConfig: producerConfig,
+		config:         config, // 添加这个字段
+		serializer:     ser,
+		batchCh:        make(chan *message.Message, producerConfig.BatchSize*2),
+		batch:          make([]*message.Message, 0, producerConfig.BatchSize),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 
-	return &Producer{
-		conn:      conn,
-		ch:        ch,
-		meter:     observer.GetMeter(),
-		logger:    observer.GetLogger(),
-		keyPrefix: keyPrefix,
+	// 启动批量处理
+	if producerConfig.BatchSize > 1 {
+		p.startBatchProcessor()
 	}
+
+	return p
 }
 
 // Send 发送消息
+// Send 方法中添加消息延迟和吞吐量指标
 func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	start := time.Now()
 	defer func() {
-		if duration, err := p.meter.Float64Histogram("producer_send_duration"); err == nil {
-			duration.Record(ctx, time.Since(start).Seconds())
-		}
+		p.recorder.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
+		// 添加吞吐量指标
+		p.recorder.RecordThroughput(ctx, msg.Topic, 1)
 	}()
 
 	if msg.ID == "" {
@@ -54,10 +88,176 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	}
 	msg.CreateAt = time.Now()
 
-	queueName := fmt.Sprintf("%s.%s", p.keyPrefix, msg.Topic)
+	// 记录消息延迟（从创建到发送的时间）
+	if !msg.CreateAt.IsZero() {
+		latency := time.Since(msg.CreateAt)
+		p.recorder.RecordMessageLatency(ctx, msg.Topic, latency)
+	}
+
+	// 如果启用批量发送
+	if p.producerConfig.BatchSize > 1 {
+		select {
+		case p.batchCh <- msg:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	// 直接发送
+	err := p.sendSingle(ctx, msg)
+	if err != nil {
+		p.recorder.RecordMessageFailed(ctx, msg.Topic, err)
+		return err
+	}
+
+	// 记录发送成功
+	p.recorder.RecordMessageSent(ctx, msg.Topic)
+	return nil
+}
+
+// SendDelay 发送延时消息 - 使用x-delayed-message插件
+func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay time.Duration) error {
+	start := time.Now()
+	defer func() {
+		// 使用observability.go中定义的指标方法
+		p.recorder.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
+	}()
+
+	if msg.ID == "" {
+		msg.ID = uuid.New().String()
+	}
+	msg.CreateAt = time.Now()
+
+	// 获取通道
+	ch, err := p.connectionPool.GetChannel(ctx)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "get_channel_error")
+		return fmt.Errorf("failed to get channel: %w", err)
+	}
+	defer p.connectionPool.ReturnChannel(ch)
+
+	// 声明延时交换机（需要x-delayed-message插件）
+	exchangeName := p.keyGen.DelayExchangeName()
+	err = ch.ExchangeDeclare(
+		exchangeName,
+		"x-delayed-message",
+		true,  // durable
+		false, // auto-deleted
+		false, // internal
+		false, // no-wait
+		amqp.Table{
+			"x-delayed-type": "direct",
+		},
+	)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "declare_exchange_error")
+		return fmt.Errorf("failed to declare delay exchange: %w", err)
+	}
+
+	// 声明目标队列
+	queueName := p.keyGen.DelayQueueName(msg.Topic)
+	_, err = ch.QueueDeclare(
+		queueName,
+		true,  // durable
+		false, // delete when unused
+		false, // exclusive
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "declare_queue_error")
+		return fmt.Errorf("failed to declare queue: %w", err)
+	}
+
+	// 绑定队列到延时交换机
+	err = ch.QueueBind(
+		queueName,
+		queueName, // routing key
+		exchangeName,
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "bind_queue_error")
+		return fmt.Errorf("failed to bind queue: %w", err)
+	}
+
+	// 序列化消息
+	body, err := p.serializer.Serialize(msg)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
+		return fmt.Errorf("serialize message failed: %w", err)
+	}
+
+	// 构建AMQP消息头
+	headers := make(amqp.Table)
+	for k, v := range msg.Headers {
+		headers[k] = v
+	}
+	// 设置延时时间（毫秒）
+	headers["x-delay"] = int64(delay / time.Millisecond)
+
+	// 发布延时消息
+	err = ch.Publish(
+		exchangeName, // exchange
+		queueName,    // routing key
+		false,        // mandatory
+		false,        // immediate
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        body,
+			Headers:     headers,
+		},
+	)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "publish_error")
+		return fmt.Errorf("failed to publish delay message: %w", err)
+	}
+
+	// 记录发送成功
+	p.recorder.RecordMessageSent(ctx, msg.Topic)
+	p.recorder.LogInfo("delay message sent",
+		zap.String("topic", msg.Topic),
+		zap.String("message_id", msg.ID),
+		zap.Duration("delay", delay),
+	)
+
+	return nil
+}
+
+// sendSingle 发送单条消息
+func (p *Producer) sendSingle(ctx context.Context, msg *message.Message) error {
+	ch, err := p.connectionPool.GetChannel(ctx)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "get_channel_error")
+		return fmt.Errorf("failed to get channel: %w", err)
+	}
+	defer p.connectionPool.ReturnChannel(ch)
+
+	exchangeName := p.keyGen.ExchangeName()
+	queueName := p.keyGen.QueueName(msg.Topic)
+
+	// 获取RabbitMQ配置
+	rabbitmqConfig := p.connectionPool.config
+
+	// 声明交换机
+	err = ch.ExchangeDeclare(
+		exchangeName,
+		rabbitmqConfig.ExchangeType,
+		true,  // durable
+		false, // auto-delete
+		false, // internal
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "declare_exchange_error")
+		return fmt.Errorf("failed to declare exchange: %w", err)
+	}
 
 	// 声明队列
-	_, err := p.ch.QueueDeclare(
+	queue, err := ch.QueueDeclare(
 		queueName, // name
 		true,      // durable
 		false,     // delete when unused
@@ -66,18 +266,31 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 		nil,       // arguments
 	)
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "declare_queue_error")
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	body, err := json.Marshal(msg)
+	// 记录队列大小
+	p.recorder.RecordQueueSize(ctx, msg.Topic, int64(queue.Messages))
+
+	// 绑定队列到交换机
+	err = ch.QueueBind(
+		queueName,
+		msg.Topic, // routing key
+		exchangeName,
+		false, // no-wait
+		nil,   // arguments
+	)
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
-		return fmt.Errorf("marshal message failed: %w", err)
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "bind_queue_error")
+		return fmt.Errorf("failed to bind queue: %w", err)
+	}
+
+	// 序列化消息
+	body, err := p.serializer.Serialize(msg)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
+		return fmt.Errorf("serialize message failed: %w", err)
 	}
 
 	// 构建AMQP消息头
@@ -86,13 +299,14 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 		headers[k] = v
 	}
 
-	err = p.ch.Publish(
-		"",        // exchange
-		queueName, // routing key
+	// 通过交换机发布消息
+	err = ch.Publish(
+		exchangeName,
+		msg.Topic, // routing key
 		false,     // mandatory
 		false,     // immediate
 		amqp.Publishing{
-			ContentType:  "application/json",
+			ContentType:  p.serializer.ContentType(),
 			Body:         body,
 			MessageId:    msg.ID,
 			Timestamp:    msg.CreateAt,
@@ -102,128 +316,148 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	)
 
 	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
-		}
-		p.logger.Error("send message failed", zap.Error(err), zap.String("topic", msg.Topic))
-		return fmt.Errorf("send message failed: %w", err)
+		p.recorder.RecordProcessingError(ctx, msg.Topic, "publish_error")
+		return fmt.Errorf("publish message failed: %w", err)
 	}
 
-	if counter, cerr := p.meter.Int64Counter("producer_send_total"); cerr == nil {
+	// 记录成功发送的消息
+	if counter, err := p.meter.Int64Counter("producer_messages_sent"); err == nil {
 		counter.Add(ctx, 1)
 	}
-	p.logger.Info("message sent", zap.String("id", msg.ID), zap.String("topic", msg.Topic))
+
+	p.recorder.RecordMessageSent(ctx, msg.Topic)
+	p.logger.Info("message sent",
+		zap.String("topic", msg.Topic),
+		zap.String("message_id", msg.ID),
+		zap.String("exchange", exchangeName),
+	)
+
 	return nil
 }
 
-// SendDelay 发送延时消息 - 使用x-delayed-message插件
-func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay time.Duration) error {
-	if msg.ID == "" {
-		msg.ID = uuid.New().String()
-	}
-	msg.CreateAt = time.Now()
-	msg.Delay = delay
+// startBatchProcessor 启动批量处理器
+func (p *Producer) startBatchProcessor() {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.flushTimer = time.NewTimer(p.producerConfig.FlushInterval)
+		defer p.flushTimer.Stop()
 
-	// 声明x-delayed-message类型的交换机
-	delayExchange := fmt.Sprintf("%s.%s.delayed", p.keyPrefix, msg.Topic)
-	queueName := fmt.Sprintf("%s.%s", p.keyPrefix, msg.Topic)
-
-	// 声明延时交换机 - 使用x-delayed-message插件
-	err := p.ch.ExchangeDeclare(
-		delayExchange,       // name
-		"x-delayed-message", // type - 使用x-delayed-message插件
-		true,                // durable
-		false,               // auto-deleted
-		false,               // internal
-		false,               // no-wait
-		amqp.Table{
-			"x-delayed-type": "direct", // 指定内部交换机类型
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to declare delayed exchange: %w", err)
-	}
-
-	// 声明目标队列
-	_, err = p.ch.QueueDeclare(
-		queueName, // name
-		true,      // durable
-		false,     // delete when unused
-		false,     // exclusive
-		false,     // no-wait
-		nil,       // arguments
-	)
-	if err != nil {
-		return fmt.Errorf("failed to declare target queue: %w", err)
-	}
-
-	// 绑定目标队列到延时交换机
-	err = p.ch.QueueBind(
-		queueName,     // queue name
-		msg.Topic,     // routing key
-		delayExchange, // exchange
-		false,
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to bind target queue: %w", err)
-	}
-
-	body, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal message failed: %w", err)
-	}
-
-	// 准备消息头，包含延时信息
-	headers := make(amqp.Table)
-	for k, v := range msg.Headers {
-		headers[k] = v
-	}
-	// 设置延时时间（毫秒）
-	headers["x-delay"] = int64(delay / time.Millisecond)
-
-	// 发送延时消息到x-delayed-message交换机
-	err = p.ch.Publish(
-		delayExchange, // exchange
-		msg.Topic,     // routing key
-		false,         // mandatory
-		false,         // immediate
-		amqp.Publishing{
-			ContentType:  "application/json",
-			Body:         body,
-			MessageId:    msg.ID,
-			Timestamp:    msg.CreateAt,
-			Headers:      headers,
-			DeliveryMode: amqp.Persistent, // 持久化消息
-		},
-	)
-
-	if err != nil {
-		if counter, cerr := p.meter.Int64Counter("producer_delay_send_errors"); cerr == nil {
-			counter.Add(ctx, 1)
+		for {
+			select {
+			case <-p.ctx.Done():
+				p.flushBatch()
+				return
+			case msg := <-p.batchCh:
+				p.addToBatch(msg)
+			case <-p.flushTimer.C:
+				p.flushBatch()
+				p.flushTimer.Reset(p.producerConfig.FlushInterval)
+			}
 		}
-		p.logger.Error("send delay message failed", zap.Error(err), zap.String("topic", msg.Topic), zap.Duration("delay", delay))
-		return fmt.Errorf("send delay message failed: %w", err)
+	}()
+}
+
+// addToBatch 添加到批次
+func (p *Producer) addToBatch(msg *message.Message) {
+	p.batchMu.Lock()
+	defer p.batchMu.Unlock()
+
+	p.batch = append(p.batch, msg)
+	if len(p.batch) >= p.producerConfig.BatchSize {
+		p.flushBatch()
+		p.flushTimer.Reset(p.producerConfig.FlushInterval)
+	}
+}
+
+// flushBatch 刷新批次
+func (p *Producer) flushBatch() {
+	p.batchMu.Lock()
+	defer p.batchMu.Unlock()
+
+	if len(p.batch) == 0 {
+		return
 	}
 
-	if counter, cerr := p.meter.Int64Counter("producer_delay_send_total"); cerr == nil {
-		counter.Add(ctx, 1)
+	// 批量发送
+	for _, msg := range p.batch {
+		if err := p.sendSingle(context.Background(), msg); err != nil {
+			p.logger.Error("failed to send batch message", zap.Error(err), zap.String("message_id", msg.ID))
+		}
 	}
-	p.logger.Info("delay message sent", zap.String("id", msg.ID), zap.String("topic", msg.Topic), zap.Duration("delay", delay))
+
+	// 清空批次
+	p.batch = p.batch[:0]
+}
+
+// Close 关闭生产者
+func (p *Producer) Close() error {
+	p.cancel()
+	p.wg.Wait()
 	return nil
 }
 
 // SendBatch 批量发送消息
 func (p *Producer) SendBatch(ctx context.Context, messages []*message.Message) error {
+	start := time.Now()
+	defer func() {
+		p.recorder.RecordProcessingTime(ctx, "batch", time.Since(start))
+		// 记录批量吞吐量
+		p.recorder.RecordThroughput(ctx, "batch", float64(len(messages)))
+	}()
+
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// 按topic分组
+	topicGroups := make(map[string][]*message.Message)
 	for _, msg := range messages {
-		if err := p.Send(ctx, msg); err != nil {
-			return err
+		if msg.ID == "" {
+			msg.ID = uuid.New().String()
+		}
+		msg.CreateAt = time.Now()
+		topicGroups[msg.Topic] = append(topicGroups[msg.Topic], msg)
+	}
+
+	// 获取通道
+	ch, err := p.connectionPool.GetChannel(ctx)
+	if err != nil {
+		p.recorder.RecordProcessingError(ctx, "batch", "get_channel_error")
+		return fmt.Errorf("failed to get channel: %w", err)
+	}
+	defer p.connectionPool.ReturnChannel(ch)
+
+	// 按topic批量发送
+	var lastErr error
+	successCount := 0
+	failedCount := 0
+
+	for topic, msgs := range topicGroups {
+		for _, msg := range msgs {
+			err := p.sendSingle(ctx, msg)
+			if err != nil {
+				p.recorder.RecordMessageFailed(ctx, topic, err)
+				lastErr = err
+				failedCount++
+				continue
+			}
+			successCount++
+		}
+
+		// 计算并记录错误率
+		totalCount := len(msgs)
+		if totalCount > 0 {
+			errorRate := float64(failedCount) / float64(totalCount)
+			p.recorder.RecordErrorRate(ctx, topic, errorRate)
 		}
 	}
-	return nil
-}
 
-// Close 关闭生产者
-func (p *Producer) Close() error {
-	return p.ch.Close()
+	p.recorder.LogInfo("batch send completed",
+		zap.Int("total", len(messages)),
+		zap.Int("success", successCount),
+		zap.Int("failed", failedCount),
+	)
+
+	return lastErr
 }

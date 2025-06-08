@@ -16,8 +16,6 @@ type RabbitMQConfig struct {
 	Password string `json:"password" yaml:"password"`
 	// VHost 虚拟主机
 	VHost string `json:"vhost" yaml:"vhost"`
-	// Exchange 默认交换机
-	Exchange string `json:"exchange" yaml:"exchange"`
 	// ExchangeType 交换机类型
 	ExchangeType string `json:"exchange_type" yaml:"exchange_type"`
 	// QueueDurable 队列是否持久化
@@ -38,19 +36,108 @@ type RabbitMQConfig struct {
 	ChannelMax int `json:"channel_max" yaml:"channel_max"`
 	// FrameSize 帧大小
 	FrameSize int `json:"frame_size" yaml:"frame_size"`
-	// KeyPrefix 队列/交换机前缀
-	KeyPrefix string `json:"key_prefix" yaml:"key_prefix"`
+
+	// 连接池配置
+	PoolSize        int `json:"pool_size" yaml:"pool_size"`
+	MinConnections  int `json:"min_connections" yaml:"min_connections"`
+	MaxConnections  int `json:"max_connections" yaml:"max_connections"`
+	ChannelPoolSize int `json:"channel_pool_size" yaml:"channel_pool_size"`
+
+	// 重连配置
+	MaxRetries     int           `json:"max_retries" yaml:"max_retries"`
+	RetryInterval  time.Duration `json:"retry_interval" yaml:"retry_interval"`
+	ReconnectDelay time.Duration `json:"reconnect_delay" yaml:"reconnect_delay"`
+
+	// 性能配置
+	Performance PerformanceConfig `json:"performance" yaml:"performance"`
+}
+
+// SetDefaults 设置默认值
+func (c *RabbitMQConfig) SetDefaults() {
+	if c.Host == "" {
+		c.Host = "localhost"
+	}
+	if c.Port == 0 {
+		c.Port = 5672
+	}
+	if c.Username == "" {
+		c.Username = "guest"
+	}
+	if c.Password == "" {
+		c.Password = "guest"
+	}
+	if c.VHost == "" {
+		c.VHost = "/"
+	}
+	if c.QoS == 0 {
+		c.QoS = 10
+	}
+	if c.Heartbeat == 0 {
+		c.Heartbeat = 60 * time.Second
+	}
+	if c.ConnectionTimeout == 0 {
+		c.ConnectionTimeout = 30 * time.Second
+	}
+
+	// 连接池默认值
+	if c.PoolSize == 0 {
+		c.PoolSize = 10
+	}
+	if c.MinConnections == 0 {
+		c.MinConnections = 2
+	}
+	if c.MaxConnections == 0 {
+		c.MaxConnections = 20
+	}
+	if c.ChannelPoolSize == 0 {
+		c.ChannelPoolSize = 0
+	}
+
+	// 重连默认值
+	if c.MaxRetries == 0 {
+		c.MaxRetries = 3
+	}
+	if c.RetryInterval == 0 {
+		c.RetryInterval = time.Second
+	}
+	if c.ReconnectDelay == 0 {
+		c.ReconnectDelay = 5 * time.Second
+	}
+
+	// 性能配置默认值
+	if c.Performance.Consumer.WorkerCount == 0 {
+		c.Performance = DefaultPerformanceConfig()
+	}
+}
+
+// GetProducerConfig 获取生产者配置
+func (c *RabbitMQConfig) GetProducerConfig() ProducerPerformanceConfig {
+	return c.Performance.Producer
+}
+
+// GetConsumerConfig 获取消费者配置
+func (c *RabbitMQConfig) GetConsumerConfig() ConsumerPerformanceConfig {
+	return c.Performance.Consumer
+}
+
+// GetSerializationConfig 获取序列化配置
+func (c *RabbitMQConfig) GetSerializationConfig() SerializationConfig {
+	return c.Performance.Serialization
+}
+
+// GetObjectPoolConfig 获取对象池配置
+func (c *RabbitMQConfig) GetObjectPoolConfig() ObjectPoolConfig {
+	return c.Performance.ObjectPool
 }
 
 // DefaultRabbitMQConfig 默认RabbitMQ配置
 func DefaultRabbitMQConfig() RabbitMQConfig {
-	return RabbitMQConfig{
+	config := RabbitMQConfig{
 		Host:              "localhost",
 		Port:              5672,
 		Username:          "guest",
 		Password:          "guest",
 		VHost:             "/",
-		Exchange:          "mq.direct",
 		ExchangeType:      "direct",
 		QueueDurable:      true,
 		QueueAutoDelete:   false,
@@ -62,4 +149,6 @@ func DefaultRabbitMQConfig() RabbitMQConfig {
 		ChannelMax:        100,
 		FrameSize:         131072,
 	}
+	config.SetDefaults()
+	return config
 }

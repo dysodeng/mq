@@ -100,7 +100,7 @@ func main() {
 
 	// 高性能Redis配置
 	cfg := config.Config{
-		Adapter:   config.AdapterRedis,
+		Adapter:   config.AdapterRabbitMQ,
 		KeyPrefix: "perf:mq",
 		Redis: config.RedisConfig{
 			Mode:               config.RedisModeStandalone,
@@ -141,6 +141,66 @@ func main() {
 			ObjectPoolEnabled:           true, // 启用对象池
 			ObjectPoolMaxMessageObjects: 2000, // 消息对象池大小
 			ObjectPoolMaxBufferObjects:  1000, // 缓冲区对象池大小
+		},
+		// 高性能RabbitMQ配置
+		RabbitMQ: config.RabbitMQConfig{
+			// 连接配置
+			Host:              "localhost",
+			Port:              5672,
+			Username:          "guest",
+			Password:          "guest",
+			VHost:             "/",
+			ExchangeType:      "direct",
+			QueueDurable:      true,
+			QueueAutoDelete:   false,
+			QueueExclusive:    false,
+			QueueNoWait:       false,
+			QoS:               50,               // 增大预取数量
+			Heartbeat:         30 * time.Second, // 心跳间隔
+			ConnectionTimeout: 10 * time.Second, // 连接超时
+			ChannelMax:        200,              // 最大通道数
+			FrameSize:         131072,           // 帧大小
+
+			// 连接池配置（高性能）
+			PoolSize:        20, // 连接池大小
+			MinConnections:  5,  // 最小连接数
+			MaxConnections:  50, // 最大连接数
+			ChannelPoolSize: 10, // 通道池大小
+
+			// 重连配置
+			MaxRetries:     5,                      // 最大重试次数
+			RetryInterval:  500 * time.Millisecond, // 重试间隔
+			ReconnectDelay: 2 * time.Second,        // 重连延迟
+
+			// 性能配置
+			Performance: config.PerformanceConfig{
+				// 消费者性能配置
+				Consumer: config.ConsumerPerformanceConfig{
+					WorkerCount:   20,                     // 消费者工作池大小
+					BufferSize:    2000,                   // 消费者缓冲区大小
+					BatchSize:     10,                     // 批处理大小
+					PollTimeout:   time.Second,            // 轮询超时
+					RetryInterval: 500 * time.Millisecond, // 重试间隔
+					MaxRetries:    5,                      // 最大重试次数
+				},
+				// 生产者性能配置
+				Producer: config.ProducerPerformanceConfig{
+					BatchSize:     200,                   // 生产者批处理大小
+					FlushInterval: 50 * time.Millisecond, // 刷新间隔
+					Compression:   true,                  // 启用压缩
+				},
+				// 序列化配置
+				Serialization: config.SerializationConfig{
+					Type:        "msgpack", // 使用MessagePack序列化
+					Compression: true,      // 启用序列化压缩
+				},
+				// 对象池配置
+				ObjectPool: config.ObjectPoolConfig{
+					Enabled:           true, // 启用对象池
+					MaxMessageObjects: 2000, // 消息对象池大小
+					MaxBufferObjects:  1000, // 缓冲区对象池大小
+				},
+			},
 		},
 	}
 

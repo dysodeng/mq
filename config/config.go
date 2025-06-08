@@ -4,6 +4,8 @@ import (
 	"time"
 )
 
+const DefaultKeyPrefix = "mq"
+
 // Config 消息队列配置
 type Config struct {
 	// Adapter 消息队列适配器类型
