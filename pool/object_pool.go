@@ -108,8 +108,6 @@ type ByteBufferPool struct {
 	getCount     int64
 	putCount     int64
 	discardCount int64
-	totalSize    int64 // 总缓冲区大小
-	bufferCount  int64 // 缓冲区数量
 }
 
 // NewByteBufferPool 创建字节缓冲池
