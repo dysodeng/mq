@@ -30,7 +30,6 @@ type ConnectionPool struct {
 // ConnectionFactory RabbitMQ连接工厂
 type ConnectionFactory struct {
 	config config.RabbitMQConfig
-	pool   *ConnectionPool
 }
 
 // NewConnectionFactory 创建连接工厂
