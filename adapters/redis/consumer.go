@@ -65,8 +65,8 @@ func NewRedisConsumer(
 	var messagePool *pool.MessagePool
 	var bufferPool *pool.ByteBufferPool
 	if config.GetObjectPoolConfig().Enabled {
-		messagePool = pool.NewMessagePool()
-		bufferPool = pool.NewByteBufferPool()
+		messagePool = pool.NewMessagePool(recorder)
+		bufferPool = pool.NewByteBufferPool(recorder)
 	}
 
 	consumer.serializer = ser

@@ -9,6 +9,7 @@ import (
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/pool"
 	"github.com/dysodeng/mq/serializer"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel/metric"
@@ -26,6 +27,11 @@ type Consumer struct {
 	serializer  serializer.Serializer
 	recorder    *observability.MetricsRecorder
 	keyGen      *KeyGenerator
+
+	// 对象池
+	messagePool    *pool.MessagePool
+	byteBufferPool *pool.ByteBufferPool
+	poolEnabled    bool
 }
 
 // subscription 订阅信息
@@ -45,16 +51,21 @@ func NewRabbitConsumer(
 	config config.RabbitMQConfig,
 	ser serializer.Serializer,
 	keyGen *KeyGenerator,
+	messagePool *pool.MessagePool,
+	byteBufferPool *pool.ByteBufferPool,
 ) *Consumer {
 	return &Consumer{
-		pool:        pool,
-		meter:       observer.GetMeter(),
-		logger:      observer.GetLogger(),
-		subscribers: make(map[string]*subscription),
-		config:      config,
-		serializer:  ser,
-		recorder:    recorder,
-		keyGen:      keyGen,
+		pool:           pool,
+		meter:          observer.GetMeter(),
+		logger:         observer.GetLogger(),
+		subscribers:    make(map[string]*subscription),
+		config:         config,
+		serializer:     ser,
+		recorder:       recorder,
+		keyGen:         keyGen,
+		messagePool:    messagePool,
+		byteBufferPool: byteBufferPool,
+		poolEnabled:    config.GetObjectPoolConfig().Enabled,
 	}
 }
 
@@ -252,6 +263,10 @@ func (c *Consumer) monitorQueueBacklog(ctx context.Context, topic, queueName str
 // handleMessage 处理消息
 func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, handler message.Handler, topic string) {
 	start := time.Now()
+	defer func() {
+		c.recorder.RecordProcessingTime(ctx, topic, time.Since(start))
+		c.recorder.RecordThroughput(ctx, topic, 1)
+	}()
 
 	retryCount := 0
 	maxRetries := 3
@@ -259,11 +274,33 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 	// 记录消息接收
 	c.recorder.RecordMessageReceived(ctx, topic)
 
-	// 反序列化消息
-	var msg message.Message
-	err := c.serializer.Deserialize(delivery.Body, &msg)
-	if err != nil {
-		c.logger.Error("failed to deserialize message", zap.Error(err), zap.String("topic", topic))
+	// 从对象池获取消息对象
+	var msg *message.Message
+	if c.poolEnabled && c.messagePool != nil {
+		msg = c.messagePool.Get()
+		defer c.messagePool.Put(msg)
+	} else {
+		msg = &message.Message{}
+	}
+
+	// 使用字节缓冲池进行反序列化
+	var deserializeErr error
+	if c.poolEnabled && c.byteBufferPool != nil {
+		buf := c.byteBufferPool.Get()
+		defer c.byteBufferPool.Put(buf)
+
+		// 复制数据到缓冲区
+		buf = append(buf, delivery.Body...)
+
+		// 反序列化
+		deserializeErr = c.serializer.Deserialize(buf, msg)
+	} else {
+		// 直接反序列化
+		deserializeErr = c.serializer.Deserialize(delivery.Body, msg)
+	}
+
+	if deserializeErr != nil {
+		c.logger.Error("failed to deserialize message", zap.Error(deserializeErr), zap.String("topic", topic))
 		c.recorder.RecordProcessingError(ctx, topic, "deserialize_error")
 		_ = delivery.Nack(false, false) // 拒绝消息，不重新入队
 		return
@@ -288,23 +325,16 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 	// 重试逻辑
 	for retryCount <= maxRetries {
 		// 调用处理器
-		err = handler(ctx, &msg)
+		err := handler(ctx, msg)
 		if err == nil {
 			break // 成功处理
 		}
 
-		retryCount++
 		c.recorder.RecordRetryAttempt(ctx, topic, retryCount)
 		c.recorder.LogWarn("message handler failed, retrying",
 			zap.Error(err),
 			zap.String("topic", topic),
 			zap.Int("retry_count", retryCount))
-
-		if retryCount > maxRetries {
-			c.recorder.RecordProcessingError(ctx, topic, "handler_error")
-			_ = delivery.Nack(false, true) // 拒绝消息并重新入队
-			return
-		}
 
 		retryCount++
 
@@ -313,15 +343,11 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 	}
 
 	// 确认消息
-	err = delivery.Ack(false)
+	err := delivery.Ack(false)
 	if err != nil {
 		c.logger.Error("failed to ack message", zap.Error(err), zap.String("topic", topic))
 		return
 	}
-
-	// 记录成功指标
-	c.recorder.RecordProcessingTime(ctx, topic, time.Since(start))
-	c.recorder.RecordThroughput(ctx, topic, 1)
 }
 
 // Unsubscribe 取消订阅

@@ -9,6 +9,7 @@ import (
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/pool"
 	"github.com/dysodeng/mq/serializer"
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -26,6 +27,10 @@ type Producer struct {
 	serializer     serializer.Serializer
 	recorder       *observability.MetricsRecorder
 	keyGen         *KeyGenerator
+
+	// 对象池
+	messagePool    *pool.MessagePool
+	byteBufferPool *pool.ByteBufferPool
 
 	// 批量发送
 	batchCh    chan *message.Message
@@ -45,6 +50,8 @@ func NewRabbitProducer(
 	config config.RabbitMQConfig,
 	ser serializer.Serializer,
 	keyGen *KeyGenerator,
+	messagePool *pool.MessagePool,
+	byteBufferPool *pool.ByteBufferPool,
 ) *Producer {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -59,6 +66,8 @@ func NewRabbitProducer(
 		producerConfig: producerConfig,
 		config:         config,
 		serializer:     ser,
+		messagePool:    messagePool,
+		byteBufferPool: byteBufferPool,
 		batchCh:        make(chan *message.Message, producerConfig.BatchSize*2),
 		batch:          make([]*message.Message, 0, producerConfig.BatchSize),
 		ctx:            ctx,
@@ -226,12 +235,33 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 
 // sendSingle 发送单条消息
 func (p *Producer) sendSingle(ctx context.Context, msg *message.Message) error {
+	// 获取通道
 	ch, err := p.connectionPool.GetChannel(ctx)
 	if err != nil {
 		p.recorder.RecordProcessingError(ctx, msg.Topic, "get_channel_error")
 		return fmt.Errorf("failed to get channel: %w", err)
 	}
 	defer p.connectionPool.ReturnChannel(ch)
+
+	// 使用字节缓冲池进行序列化（如果启用）
+	var body []byte
+	if p.byteBufferPool != nil {
+		buf := p.byteBufferPool.Get()
+		defer p.byteBufferPool.Put(buf)
+
+		// 序列化到缓冲区
+		body, err = p.serializer.Serialize(msg)
+		if err != nil {
+			p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
+			return fmt.Errorf("serialize message failed: %w", err)
+		}
+	} else {
+		body, err = p.serializer.Serialize(msg)
+		if err != nil {
+			p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
+			return fmt.Errorf("serialize message failed: %w", err)
+		}
+	}
 
 	exchangeName := p.keyGen.ExchangeName()
 	queueName := p.keyGen.QueueName(msg.Topic)
@@ -285,11 +315,11 @@ func (p *Producer) sendSingle(ctx context.Context, msg *message.Message) error {
 	}
 
 	// 序列化消息
-	body, err := p.serializer.Serialize(msg)
-	if err != nil {
-		p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
-		return fmt.Errorf("serialize message failed: %w", err)
-	}
+	// body, err := p.serializer.Serialize(msg)
+	// if err != nil {
+	// 	p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
+	// 	return fmt.Errorf("serialize message failed: %w", err)
+	// }
 
 	// 构建AMQP消息头
 	headers := make(amqp.Table)

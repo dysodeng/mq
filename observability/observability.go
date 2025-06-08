@@ -17,6 +17,13 @@ type Observer interface {
 	GetLogger() *zap.Logger
 }
 
+// PoolStatistics 池统计信息结构体
+type PoolStatistics struct {
+	HitRate           float64 // 命中率
+	ObjectCount       int64   // 对象数量
+	AverageBufferSize float64 // 平均缓冲区大小
+}
+
 // MetricsRecorder 指标记录器
 type MetricsRecorder struct {
 	meter   metric.Meter
@@ -39,6 +46,19 @@ type MetricsRecorder struct {
 	throughput         metric.Float64Counter
 	processingErrors   metric.Int64Counter
 	retryAttempts      metric.Int64Counter
+
+	// 对象池指标
+	poolHitRate         metric.Float64Gauge
+	poolObjectCount     metric.Int64Gauge
+	objectGetTotal      metric.Int64Counter
+	objectPutTotal      metric.Int64Counter
+	objectCreateTotal   metric.Int64Counter
+	objectUsageDuration metric.Float64Histogram
+
+	// 缓冲池指标
+	bufferPoolSize     metric.Int64Gauge
+	bufferAverageSize  metric.Float64Gauge
+	bufferDiscardTotal metric.Int64Counter
 }
 
 // NewMetricsRecorder 创建指标记录器
@@ -135,6 +155,80 @@ func NewMetricsRecorder(observer Observer, adapter string) (*MetricsRecorder, er
 		return nil, err
 	}
 
+	// 创建对象池指标
+	poolHitRate, err := meter.Float64Gauge(
+		"mq_pool_hit_rate",
+		metric.WithDescription("Object pool hit rate"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	poolObjectCount, err := meter.Int64Gauge(
+		"mq_pool_object_count",
+		metric.WithDescription("Current number of objects in pool"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	objectGetTotal, err := meter.Int64Counter(
+		"mq_object_get_total",
+		metric.WithDescription("Total number of object get operations"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	objectPutTotal, err := meter.Int64Counter(
+		"mq_object_put_total",
+		metric.WithDescription("Total number of object put operations"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	objectCreateTotal, err := meter.Int64Counter(
+		"mq_object_create_total",
+		metric.WithDescription("Total number of new objects created"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	objectUsageDuration, err := meter.Float64Histogram(
+		"mq_object_usage_duration_seconds",
+		metric.WithDescription("Object usage duration in seconds"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 创建缓冲池指标
+	bufferPoolSize, err := meter.Int64Gauge(
+		"mq_buffer_pool_size",
+		metric.WithDescription("Current buffer pool size"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	bufferAverageSize, err := meter.Float64Gauge(
+		"mq_buffer_average_size_bytes",
+		metric.WithDescription("Average buffer size in bytes"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	bufferDiscardTotal, err := meter.Int64Counter(
+		"mq_buffer_discard_total",
+		metric.WithDescription("Total number of buffers discarded due to size limit"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &MetricsRecorder{
 		meter:              meter,
 		adapter:            adapter,
@@ -149,6 +243,17 @@ func NewMetricsRecorder(observer Observer, adapter string) (*MetricsRecorder, er
 		throughput:         throughput,
 		processingErrors:   processingErrors,
 		retryAttempts:      retryAttempts,
+		// 对象池指标
+		poolHitRate:         poolHitRate,
+		poolObjectCount:     poolObjectCount,
+		objectGetTotal:      objectGetTotal,
+		objectPutTotal:      objectPutTotal,
+		objectCreateTotal:   objectCreateTotal,
+		objectUsageDuration: objectUsageDuration,
+		// 缓冲池指标
+		bufferPoolSize:     bufferPoolSize,
+		bufferAverageSize:  bufferAverageSize,
+		bufferDiscardTotal: bufferDiscardTotal,
 	}, nil
 }
 
@@ -284,6 +389,115 @@ func (m *MetricsRecorder) RecordRetryAttempt(ctx context.Context, topic string, 
 		attribute.String("topic", topic),
 		attribute.Int("attempt", attempt),
 	))
+}
+
+// RecordPoolHitRate 记录对象池命中率
+func (m *MetricsRecorder) RecordPoolHitRate(ctx context.Context, poolType string, hitRate float64) {
+	if m.poolHitRate != nil {
+		m.poolHitRate.Record(ctx, hitRate, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.String("pool_type", poolType),
+		))
+	}
+}
+
+// RecordPoolObjectCount 记录对象池中对象数量
+func (m *MetricsRecorder) RecordPoolObjectCount(ctx context.Context, poolType string, count int64) {
+	if m.poolObjectCount != nil {
+		m.poolObjectCount.Record(ctx, count, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.String("pool_type", poolType),
+		))
+	}
+}
+
+// RecordObjectGet 记录对象获取操作
+func (m *MetricsRecorder) RecordObjectGet(ctx context.Context, poolType string) {
+	if m.objectGetTotal != nil {
+		m.objectGetTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.String("pool_type", poolType),
+		))
+	}
+}
+
+// RecordObjectPut 记录对象归还操作
+func (m *MetricsRecorder) RecordObjectPut(ctx context.Context, poolType string) {
+	if m.objectPutTotal != nil {
+		m.objectPutTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.String("pool_type", poolType),
+		))
+	}
+}
+
+// RecordObjectCreate 记录新对象创建
+func (m *MetricsRecorder) RecordObjectCreate(ctx context.Context, poolType string) {
+	if m.objectCreateTotal != nil {
+		m.objectCreateTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.String("pool_type", poolType),
+		))
+	}
+	if m.logger != nil {
+		m.logger.Debug("New object created",
+			zap.String("adapter", m.adapter),
+			zap.String("pool_type", poolType),
+		)
+	}
+}
+
+// RecordObjectUsage 记录对象使用时长
+func (m *MetricsRecorder) RecordObjectUsage(ctx context.Context, poolType string, duration time.Duration) {
+	if m.objectUsageDuration != nil {
+		m.objectUsageDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.String("pool_type", poolType),
+		))
+	}
+}
+
+// RecordBufferPoolSize 记录缓冲池大小
+func (m *MetricsRecorder) RecordBufferPoolSize(ctx context.Context, size int64) {
+	if m.bufferPoolSize != nil {
+		m.bufferPoolSize.Record(ctx, size, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+		))
+	}
+}
+
+// RecordBufferAverageSize 记录缓冲区平均大小
+func (m *MetricsRecorder) RecordBufferAverageSize(ctx context.Context, avgSize float64) {
+	if m.bufferAverageSize != nil {
+		m.bufferAverageSize.Record(ctx, avgSize, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+		))
+	}
+}
+
+// RecordBufferDiscard 记录缓冲区丢弃事件
+func (m *MetricsRecorder) RecordBufferDiscard(ctx context.Context, bufferSize int) {
+	if m.bufferDiscardTotal != nil {
+		m.bufferDiscardTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("adapter", m.adapter),
+			attribute.Int("buffer_size", bufferSize),
+		))
+	}
+	if m.logger != nil {
+		m.logger.Debug("Buffer discarded due to size limit",
+			zap.String("adapter", m.adapter),
+			zap.Int("buffer_size", bufferSize),
+		)
+	}
+}
+
+// RecordPoolStatistics 批量记录池统计信息
+func (m *MetricsRecorder) RecordPoolStatistics(ctx context.Context, poolType string, stats PoolStatistics) {
+	m.RecordPoolHitRate(ctx, poolType, stats.HitRate)
+	m.RecordPoolObjectCount(ctx, poolType, stats.ObjectCount)
+	if stats.AverageBufferSize > 0 {
+		m.RecordBufferAverageSize(ctx, stats.AverageBufferSize)
+	}
 }
 
 // LogInfo 记录信息日志

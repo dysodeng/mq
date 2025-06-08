@@ -9,6 +9,7 @@ import (
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/observability"
+	"github.com/dysodeng/mq/pool"
 	"github.com/dysodeng/mq/serializer"
 	"go.uber.org/zap"
 )
@@ -24,6 +25,11 @@ type RabbitMQ struct {
 	config         config.RabbitMQConfig
 	keyPrefix      string
 	serializer     serializer.Serializer
+
+	// 对象池
+	messagePool     *pool.MessagePool
+	byteBufferPool  *pool.ByteBufferPool
+	metricsReporter *time.Ticker
 
 	// 重连机制
 	ctx    context.Context
@@ -79,6 +85,19 @@ func NewRabbitMQ(cfg config.RabbitMQConfig, observer observability.Observer, key
 	// 创建键名生成器
 	keyGen := NewKeyGenerator(keyPrefix)
 
+	// 创建对象池（如果启用）
+	var messagePool *pool.MessagePool
+	var byteBufferPool *pool.ByteBufferPool
+	poolConfig := cfg.GetObjectPoolConfig()
+	if poolConfig.Enabled {
+		messagePool = pool.NewMessagePool(recorder)
+		byteBufferPool = pool.NewByteBufferPool(recorder)
+
+		observer.GetLogger().Info("Object pools enabled for RabbitMQ",
+			zap.Int("max_message_objects", poolConfig.MaxMessageObjects),
+			zap.Int("max_buffer_objects", poolConfig.MaxBufferObjects))
+	}
+
 	mq := &RabbitMQ{
 		connectionPool: connectionPool,
 		connFactory:    connFactory,
@@ -86,18 +105,23 @@ func NewRabbitMQ(cfg config.RabbitMQConfig, observer observability.Observer, key
 		config:         cfg,
 		keyPrefix:      keyPrefix,
 		serializer:     ser,
+		messagePool:    messagePool,
+		byteBufferPool: byteBufferPool,
 		ctx:            mainCtx,
 		cancel:         mainCancel,
 		logger:         observer.GetLogger(),
 	}
 
 	// 创建组件
-	mq.producer = NewRabbitProducer(connectionPool, observer, recorder, cfg, ser, keyGen)
-	mq.consumer = NewRabbitConsumer(connectionPool, observer, recorder, cfg, ser, keyGen)
+	mq.producer = NewRabbitProducer(connectionPool, observer, recorder, cfg, ser, keyGen, messagePool, byteBufferPool)
+	mq.consumer = NewRabbitConsumer(connectionPool, observer, recorder, cfg, ser, keyGen, messagePool, byteBufferPool)
 	mq.delayQueue = NewRabbitDelayQueue(connectionPool, observer, recorder, cfg, ser, keyGen)
 
 	// 启动健康检查和重连机制
 	mq.startHealthCheck()
+
+	// 启动指标定时上报
+	mq.startMetricsReporting()
 
 	// 标记成功，避免 defer 中的清理
 	success = true
@@ -151,6 +175,10 @@ func (r *RabbitMQ) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.metricsReporter != nil {
+		r.metricsReporter.Stop()
+	}
+
 	if r.closed {
 		return nil
 	}
@@ -164,4 +192,21 @@ func (r *RabbitMQ) Close() error {
 
 	// 关闭连接池
 	return r.connectionPool.Close()
+}
+
+// 启动指标报告
+func (r *RabbitMQ) startMetricsReporting() {
+	r.metricsReporter = time.NewTicker(5 * time.Second) // 每30秒报告一次
+
+	go func() {
+		for range r.metricsReporter.C {
+			ctx := context.Background()
+			if r.messagePool != nil {
+				r.messagePool.ReportMetrics(ctx)
+			}
+			if r.byteBufferPool != nil {
+				r.byteBufferPool.ReportMetrics(ctx)
+			}
+		}
+	}()
 }
