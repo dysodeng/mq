@@ -184,47 +184,47 @@ func main() {
 	}
 
 	// 批量发送消息
-	// start := time.Now()
-	// messages := make([]*message.Message, 1000)
-	// for i := 0; i < 1000; i++ {
-	// 	messages[i] = &message.Message{
-	// 		Topic:   "perf-topic",
-	// 		Payload: []byte(fmt.Sprintf("High performance message %d", i)),
-	// 		Headers: map[string]string{
-	// 			"batch_id": "batch-001",
-	// 			"index":    fmt.Sprintf("%d", i),
-	// 		},
-	// 	}
-	// }
-	//
-	// err = producer.SendBatch(ctx, messages)
-	// if err != nil {
-	// 	log.Fatal("Failed to send batch:", err)
-	// }
-	//
-	// duration := time.Since(start)
-	// fmt.Printf("Sent 1000 messages in %v (%.2f msg/s)\n", duration, 1000.0/duration.Seconds())
+	start := time.Now()
+	messages := make([]*message.Message, 1000)
+	for i := 0; i < 1000; i++ {
+		messages[i] = &message.Message{
+			Topic:   "perf-topic",
+			Payload: []byte(fmt.Sprintf("High performance message %d", i)),
+			Headers: map[string]string{
+				"batch_id": "batch-001",
+				"index":    fmt.Sprintf("%d", i),
+			},
+		}
+	}
 
-	// go func() {
-	// 	i := 1
-	// 	for {
-	// 		msg := &message.Message{
-	// 			Topic:   "perf-topic",
-	// 			Payload: []byte(fmt.Sprintf("High performance message watch %d", i)),
-	// 			Headers: map[string]string{
-	// 				"batch_id": "batch-001",
-	// 				"index":    fmt.Sprintf("%d", i),
-	// 			},
-	// 		}
-	// 		if err = producer.Send(ctx, msg); err != nil {
-	// 			log.Printf("Failed to send batch: %v", err)
-	// 		}
-	// 		i++
-	// 		rand.New(rand.NewSource(rand.Int63()))
-	// 		randomNum := rand.Intn(5) + 1
-	// 		time.Sleep(time.Duration(randomNum) * time.Second)
-	// 	}
-	// }()
+	err = producer.SendBatch(ctx, messages)
+	if err != nil {
+		log.Fatal("Failed to send batch:", err)
+	}
+
+	duration := time.Since(start)
+	fmt.Printf("Sent 1000 messages in %v (%.2f msg/s)\n", duration, 1000.0/duration.Seconds())
+
+	go func() {
+		i := 1
+		for {
+			msg := &message.Message{
+				Topic:   "perf-topic",
+				Payload: []byte(fmt.Sprintf("High performance message watch %d", i)),
+				Headers: map[string]string{
+					"batch_id": "batch-001",
+					"index":    fmt.Sprintf("%d", i),
+				},
+			}
+			if err = producer.Send(ctx, msg); err != nil {
+				log.Printf("Failed to send batch: %v", err)
+			}
+			i++
+			rand.New(rand.NewSource(rand.Int63()))
+			randomNum := rand.Intn(5) + 1
+			time.Sleep(time.Duration(randomNum) * time.Second)
+		}
+	}()
 	go func() {
 		i := 1
 		for {

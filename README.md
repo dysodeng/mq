@@ -99,11 +99,11 @@ func main() {
 
 ## 📋 支持的适配器
 
-|适配器 | 状态 | 特性|
-|--------|--------|---------|
-| Redis| ✅ |基于List的队列，Sorted sets实现延时|
-| RabbitMQ| ✅ |AMQP协议，Exchange路由|
-| Kafka |✅ |分布式流处理，分区支持|
+| 适配器      | 状态 | 特性                                  |
+|----------|----|-------------------------------------|
+| Redis    | ✅  | 基于List的队列，Sorted sets实现延时，支持集群和哨兵模式 |
+| RabbitMQ | ✅  | AMQP协议，Exchange路由，持久化支持             |
+| Kafka    | ✅  | 分布式流处理，分区支持，高吞吐量                    |
 
 ## ⚙️ 配置
 ### Redis 配置
@@ -112,14 +112,26 @@ cfg := config.Config{
     Adapter:   config.AdapterRedis,
     KeyPrefix: "myapp",
     Redis: config.RedisConfig{
-        Addr:         "localhost:6379",
-        Password:     "",
-        DB:           0,
+        // 连接配置
+        Mode:     config.RedisModeSingle, // 支持Single, Cluster, Sentinel
+        Addr:     "localhost:6379",
+        Password: "",
+        DB:       0,
+        
+        // 连接池配置
         PoolSize:     10,
         MinIdleConns: 5,
         MaxConnAge:   time.Hour,
         PoolTimeout:  30 * time.Second,
         IdleTimeout:  5 * time.Minute,
+        
+        // 性能配置
+        ConsumerWorkerCount: 5,
+        ConsumerBatchSize:   10,
+        ProducerBatchSize:   100,
+        
+        // 序列化配置
+        SerializationType: "json", // 支持json, msgpack, protobuf
     },
 }
 ```
@@ -230,11 +242,35 @@ func main() {
 ```
 
 ### 可用指标
-- mq_messages_sent_total - 发送消息总数
-- mq_messages_received_total - 消费消息总数
-- mq_messages_failed_total - 失败消息总数
-- mq_message_processing_duration_seconds - 消息处理耗时
-- mq_queue_size - 当前队列大小
+
+#### 基础指标
+- `mq_messages_sent_total` - 发送消息总数
+- `mq_messages_received_total` - 接收消息总数
+- `mq_errors_total` - 错误总数
+- `mq_processing_duration_seconds` - 消息处理耗时（直方图）
+
+#### 增强指标
+- `mq_connection_pool_size` - 当前连接池大小
+- `mq_message_latency_seconds` - 消息端到端延迟（直方图）
+- `mq_queue_backlog` - 当前队列积压大小
+- `mq_error_rate` - 当前错误率
+- `mq_throughput_total` - 总吞吐量
+- `mq_processing_errors_total` - 处理错误总数
+- `mq_retry_attempts_total` - 重试尝试总数
+
+#### 指标标签
+所有指标都包含以下标签：
+- `adapter` - 适配器类型（redis/rabbitmq/kafka）
+- `topic` - 消息主题
+- `error` - 错误信息（仅错误相关指标）
+- `error_type` - 错误类型（仅处理错误指标）
+- `attempt` - 重试次数（仅重试指标）
+
+#### 指标类型说明
+- **Counter**: 累计计数器，只增不减
+- **Gauge**: 瞬时值，可增可减
+- **Histogram**: 直方图，记录数值分布
+- **UpDownCounter**: 可增减计数器
 
 ## 🏗️ 架构
 ```
@@ -243,23 +279,32 @@ func main() {
 └─────────┬───────┘
           │
 ┌─────────▼───────┐
-│     Factory     │
+│     Factory     │  ← 工厂模式，支持多种适配器
 └─────────┬───────┘
           │
 ┌─────────▼───────┐
-│   MQ Interface  │
+│   MQ Interface  │  ← 统一接口层
 ├─────────────────┤
-│   • Producer    │
-│   • Consumer    │
-│   • DelayQueue  │
-│   • HealthCheck │
+│   • Producer    │  ← 生产者：支持普通和延时消息
+│   • Consumer    │  ← 消费者：支持多topic订阅
+│   • DelayQueue  │  ← 延时队列：独立的延时消息管理
+│   • HealthCheck │  ← 健康检查
 └─────────┬───────┘
           │
 ┌─────────▼───────┐
-│    Adapters     │
+│    Adapters     │  ← 适配器层
 ├─────────────────┤
-│ Redis │RabbitMQ │
+│ Redis │RabbitMQ │  ← 支持多种消息队列后端
 │ Kafka │  ...    │
+└─────────┬───────┘
+          │
+┌─────────▼───────┐
+│  Infrastructure │  ← 基础设施层
+├─────────────────┤
+│ • Serializer    │  ← 序列化：JSON/MessagePack/Protobuf
+│ • Object Pool   │  ← 对象池：优化内存分配
+│ • Observability │  ← 可观测性：指标/日志/链路追踪
+│ • Worker Pool   │  ← 工作池：并发处理优化
 └─────────────────┘
 ```
 
@@ -269,7 +314,7 @@ func main() {
 延时队列使用时间轮算法实现高效的延时消息处理：
 
 ```go
-// 发送延时消息
+// 方式1：使用DelayQueue接口
 msg := &message.Message{
     Topic:   "notification",
     Payload: []byte("Reminder: Meeting in 1 hour"),
@@ -277,6 +322,15 @@ msg := &message.Message{
 
 // 1小时后投递
 err := mqInstance.DelayQueue().Push(ctx, msg, time.Hour)
+
+// 方式2：使用Producer的SendDelay方法
+err := producer.SendDelay(ctx, msg, time.Hour)
+
+// 查询延时队列大小
+size, err := mqInstance.DelayQueue().Size(ctx)
+
+// 移除特定延时消息
+err = mqInstance.DelayQueue().Remove(ctx, "message-id")
 ```
 
 ### 批量操作
@@ -290,11 +344,55 @@ messages := []*message.Message{
 err := producer.SendBatch(ctx, messages)
 ```
 
+### 消息结构
+```go
+type Message struct {
+    ID       string            `json:"id"`        // 消息唯一标识
+    Topic    string            `json:"topic"`     // 消息主题
+    Payload  []byte            `json:"payload"`   // 消息内容
+    Headers  map[string]string `json:"headers"`   // 消息头
+    Delay    time.Duration     `json:"delay"`     // 延时时间（可选）
+    Retry    int               `json:"retry"`     // 重试次数
+    CreateAt time.Time         `json:"create_at"` // 创建时间
+}
+```
+
 ### 健康检查
 ```go
 // 检查MQ健康状态
 if err := mqInstance.HealthCheck(); err != nil {
     log.Printf("MQ health check failed: %v", err)
+}
+```
+
+### 序列化支持
+支持多种序列化格式：
+
+- JSON : 默认格式，易于调试
+- MessagePack : 二进制格式，更高效
+- Protobuf : 强类型，跨语言支持
+```go
+// 配置序列化类型
+redisConfig.SerializationType = "msgpack"
+redisConfig.SerializationCompression = true // 启用压缩
+```
+
+### 性能优化
+```go
+// Redis性能配置示例
+redisConfig := config.RedisConfig{
+    // 消费者优化
+    ConsumerWorkerCount:   10,              // 消费者工作协程数
+    ConsumerBatchSize:     50,              // 批量消费大小
+    ConsumerPollTimeout:   time.Second,     // 轮询超时
+    
+    // 生产者优化
+    ProducerBatchSize:     100,             // 批量发送大小
+    ProducerFlushInterval: 100*time.Millisecond, // 刷新间隔
+    
+    // 连接池优化
+    PoolSize:              20,              // 连接池大小
+    MinIdleConns:          5,               // 最小空闲连接
 }
 ```
 
@@ -313,8 +411,9 @@ go test -bench=. ./...
 ## 📝 示例
 查看 examples 目录获取更多完整的使用示例：
 
-- 基本用法 - 简单的生产者/消费者示例
-- 可观测性 - 完整的可观测性设置
+- basic - 基本的生产者/消费者示例
+- performance - 性能测试和批量处理示例
+- with_observability - 完整的可观测性设置示例
 
 ## 📄 许可证
 本项目采用 MIT 许可证 - 查看 LICENSE 文件了解详情
