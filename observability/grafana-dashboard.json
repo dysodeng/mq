@@ -116,6 +116,16 @@
           "interval": "",
           "legendFormat": "接收 - {{adapter}} - {{topic}}",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "rate(mq_messages_failed_total[5m])",
+          "interval": "",
+          "legendFormat": "失败 - {{adapter}} - {{topic}}",
+          "refId": "C"
         }
       ],
       "title": "消息吞吐量 (每秒)",
@@ -858,7 +868,7 @@
           },
           "expr": "rate(mq_processing_errors_total[5m])",
           "interval": "",
-          "legendFormat": "处理错误/秒 - {{adapter}} - {{topic}} - {{error_type}}",
+          "legendFormat": "处理错误/秒 - {{adapter}} - {{topic}}",
           "refId": "B"
         },
         {
@@ -870,6 +880,16 @@
           "interval": "",
           "legendFormat": "重试次数/秒 - {{adapter}} - {{topic}}",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "rate(mq_messages_failed_total[5m])",
+          "interval": "",
+          "legendFormat": "消息失败/秒 - {{adapter}} - {{topic}}",
+          "refId": "D"
         }
       ],
       "title": "错误和重试统计",
@@ -882,7 +902,7 @@
   "tags": [
     "mq",
     "messaging",
-    "performance"
+    "observability"
   ],
   "templating": {
     "list": [
@@ -941,7 +961,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(mq_messages_sent_total{adapter=~\"$adapter\"}, topic)",
+        "definition": "label_values(mq_messages_sent_total, topic)",
         "hide": 0,
         "includeAll": true,
         "label": "主题",
@@ -949,7 +969,7 @@
         "name": "topic",
         "options": [],
         "query": {
-          "query": "label_values(mq_messages_sent_total{adapter=~\"$adapter\"}, topic)",
+          "query": "label_values(mq_messages_sent_total, topic)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,
@@ -966,8 +986,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "MQ 监控面板",
-  "uid": "mq-dashboard",
+  "title": "消息队列-监控面板",
+  "uid": "grafana-mq-monitoring",
   "version": 1,
   "weekStart": ""
 }

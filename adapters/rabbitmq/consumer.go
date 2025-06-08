@@ -268,9 +268,6 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 		c.recorder.RecordThroughput(ctx, topic, 1)
 	}()
 
-	retryCount := 0
-	maxRetries := 3
-
 	// 记录消息接收
 	c.recorder.RecordMessageReceived(ctx, topic)
 
@@ -322,28 +319,18 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 		}
 	}
 
-	// 重试逻辑
-	for retryCount <= maxRetries {
-		// 调用处理器
-		err := handler(ctx, msg)
-		if err == nil {
-			break // 成功处理
-		}
-
-		c.recorder.RecordRetryAttempt(ctx, topic, retryCount)
-		c.recorder.LogWarn("message handler failed, retrying",
-			zap.Error(err),
+	err := handler(ctx, msg)
+	if err != nil {
+		c.recorder.RecordMessageFailed(ctx, topic, err)
+		c.logger.Error("message processing failed",
 			zap.String("topic", topic),
-			zap.Int("retry_count", retryCount))
-
-		retryCount++
-
-		// 重试延迟
-		time.Sleep(time.Duration(retryCount) * time.Second)
+			zap.String("message_id", msg.ID),
+			zap.Error(err),
+		)
 	}
 
 	// 确认消息
-	err := delivery.Ack(false)
+	err = delivery.Ack(false)
 	if err != nil {
 		c.logger.Error("failed to ack message", zap.Error(err), zap.String("topic", topic))
 		return

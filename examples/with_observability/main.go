@@ -9,14 +9,7 @@ import (
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/propagation"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	"go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.uber.org/zap"
 )
 
@@ -34,70 +27,8 @@ func (o *MyObserver) GetLogger() *zap.Logger {
 	return o.logger
 }
 
-func initOpenTelemetry(ctx context.Context) (func(), error) {
-	// 创建资源
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName("mq-service"),
-			semconv.ServiceVersion("1.0.0"),
-		),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 初始化OTLP Metrics导出器
-	metricsExporter, err := otlpmetrichttp.New(ctx,
-		otlpmetrichttp.WithEndpointURL("http://localhost:4318"),
-		otlpmetrichttp.WithInsecure(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 创建Metrics Provider
-	meterProvider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricsExporter,
-			sdkmetric.WithInterval(30*time.Second))),
-	)
-	otel.SetMeterProvider(meterProvider)
-
-	// 初始化OTLP Trace导出器
-	traceExporter, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpointURL("http://localhost:4318"),
-		otlptracehttp.WithInsecure(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 创建Trace Provider
-	traceProvider := trace.NewTracerProvider(
-		trace.WithBatcher(traceExporter),
-		trace.WithResource(res),
-	)
-	otel.SetTracerProvider(traceProvider)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-
-	// 返回清理函数
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		meterProvider.Shutdown(ctx)
-		traceProvider.Shutdown(ctx)
-	}, nil
-}
-
 func main() {
 	ctx := context.Background()
-
-	// 1. 初始化OpenTelemetry
-	shutdown, err := initOpenTelemetry(ctx)
-	if err != nil {
-		log.Fatal("Failed to initialize OpenTelemetry:", err)
-	}
-	defer shutdown()
 
 	// 2. 初始化zap日志
 	logger, err := zap.NewProduction()

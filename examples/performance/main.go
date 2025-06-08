@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,13 +13,7 @@ import (
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/contract"
 	"github.com/dysodeng/mq/message"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.uber.org/zap"
 )
 
@@ -37,66 +30,8 @@ func (o *MyObserver) GetLogger() *zap.Logger {
 	return o.logger
 }
 
-func initOpenTelemetry(ctx context.Context) (func(), error) {
-	// 创建资源
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName("mq-service"),
-			semconv.ServiceVersion("v1.0.0"),
-			attribute.String("env", "dev"),
-		),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	mpOpts := []sdkmetric.Option{
-		sdkmetric.WithResource(res),
-	}
-
-	// 初始化OTLP Metrics导出器
-	metricsExporter, err := otlpmetrichttp.New(ctx,
-		otlpmetrichttp.WithEndpointURL("http://localhost:4318"),
-		otlpmetrichttp.WithInsecure(),
-	)
-	if err != nil {
-		return nil, err
-	}
-	// 创建Metrics Provider
-	mpOpts = append(mpOpts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricsExporter, sdkmetric.WithInterval(5*time.Second))))
-	meterProvider := sdkmetric.NewMeterProvider(mpOpts...)
-
-	otel.SetMeterProvider(meterProvider)
-
-	// 返回清理函数
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = meterProvider.Shutdown(ctx)
-	}, nil
-}
-
 func main() {
 	ctx := context.Background()
-
-	// 1. 初始化OpenTelemetry
-	shutdown, err := initOpenTelemetry(ctx)
-	if err != nil {
-		log.Fatal("Failed to initialize OpenTelemetry:", err)
-	}
-	defer shutdown()
-
-	// 初始化可观测性
-	meter := otel.Meter("mq-performance-example")
-	logger, _ := zap.NewDevelopment()
-	defer logger.Sync()
-
-	observer := &MyObserver{
-		meter:  meter,
-		logger: logger,
-	}
 
 	// 高性能Redis配置
 	cfg := config.Config{
@@ -105,7 +40,7 @@ func main() {
 		Redis: config.RedisConfig{
 			Mode:               config.RedisModeStandalone,
 			Addr:               "localhost:6379",
-			Password:           "123456",
+			Password:           "",
 			DB:                 0,
 			PoolSize:           200, // 增大连接池
 			MinIdleConns:       50,  // 增加最小空闲连接
@@ -204,8 +139,8 @@ func main() {
 		},
 	}
 
-	// 创建消息队列实例（使用工厂模式，自动应用性能配置）
-	factory := mq.NewFactory(cfg, mq.WithObserver(observer))
+	// 创建消息队列实例
+	factory := mq.NewFactory(cfg)
 	mqInstance, err := factory.CreateMQ()
 	if err != nil {
 		log.Fatal("Failed to create MQ:", err)
@@ -219,12 +154,16 @@ func main() {
 	// 高性能消费者示例
 	handler := func(ctx context.Context, msg *message.Message) error {
 		// 模拟处理时间
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		fmt.Printf("[%s] Processed: %s\n", time.Now().Format(time.DateTime), string(msg.Payload))
 		return nil
 	}
 
 	// 创建中间件链
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatal("Failed to create logger:", err)
+	}
 	middlewareChain := contract.NewMiddlewareChain(
 		contract.LoggingMiddleware(logger),
 		contract.TimeoutMiddleware(30*time.Second),
@@ -264,48 +203,6 @@ func main() {
 
 	duration := time.Since(start)
 	fmt.Printf("Sent 1000 messages in %v (%.2f msg/s)\n", duration, 1000.0/duration.Seconds())
-
-	go func() {
-		i := 1
-		for {
-			msg := &message.Message{
-				Topic:   "perf-topic",
-				Payload: []byte(fmt.Sprintf("High performance message watch %d", i)),
-				Headers: map[string]string{
-					"batch_id": "batch-001",
-					"index":    fmt.Sprintf("%d", i),
-				},
-			}
-			if err = producer.Send(ctx, msg); err != nil {
-				log.Printf("Failed to send batch: %v", err)
-			}
-			i++
-			rand.New(rand.NewSource(rand.Int63()))
-			randomNum := rand.Intn(5) + 1
-			time.Sleep(time.Duration(randomNum) * time.Second)
-		}
-	}()
-	go func() {
-		i := 1
-		for {
-			msg := &message.Message{
-				Topic:   "perf-delay-topic",
-				Payload: []byte(fmt.Sprintf("High performance delay message watch %d", i)),
-				Headers: map[string]string{
-					"batch_id": "batch-002",
-					"index":    fmt.Sprintf("%d", i),
-				},
-			}
-			log.Printf("[%s] Sending message: %s", time.Now().Format(time.DateTime), string(msg.Payload))
-			if err = producer.SendDelay(ctx, msg, 5*time.Second); err != nil {
-				log.Printf("Failed to send batch: %v", err)
-			}
-			i++
-			rand.New(rand.NewSource(rand.Int63()))
-			randomNum := rand.Intn(5) + 1
-			time.Sleep(time.Duration(randomNum) * time.Second)
-		}
-	}()
 
 	// 等待消息处理
 	quit := make(chan os.Signal, 1)

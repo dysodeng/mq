@@ -41,7 +41,7 @@ type MetricsRecorder struct {
 	// 增强指标
 	connectionPoolSize metric.Int64Gauge
 	messageLatency     metric.Float64Histogram
-	queueBacklog       metric.Int64UpDownCounter
+	queueBacklog       metric.Int64Gauge
 	errorRate          metric.Float64Gauge
 	throughput         metric.Float64Counter
 	processingErrors   metric.Int64Counter
@@ -82,6 +82,14 @@ func NewMetricsRecorder(observer Observer, adapter string) (*MetricsRecorder, er
 		return nil, err
 	}
 
+	messagesFailed, err := meter.Int64Counter(
+		"mq_messages_failed_total",
+		metric.WithDescription("Total number of messages failed"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	errorCount, err := meter.Int64Counter(
 		"mq_errors_total",
 		metric.WithDescription("Total number of errors"),
@@ -115,7 +123,7 @@ func NewMetricsRecorder(observer Observer, adapter string) (*MetricsRecorder, er
 		return nil, err
 	}
 
-	queueBacklog, err := meter.Int64UpDownCounter(
+	queueBacklog, err := meter.Int64Gauge(
 		"mq_queue_backlog",
 		metric.WithDescription("Current queue backlog size"),
 	)
@@ -234,6 +242,7 @@ func NewMetricsRecorder(observer Observer, adapter string) (*MetricsRecorder, er
 		adapter:            adapter,
 		messagesSent:       messagesSent,
 		messagesReceived:   messagesReceived,
+		messagesFailed:     messagesFailed,
 		errorCount:         errorCount,
 		processingTime:     processingTime,
 		connectionPoolSize: connectionPoolSize,
@@ -351,7 +360,7 @@ func (m *MetricsRecorder) RecordMessageLatency(ctx context.Context, topic string
 
 // RecordQueueBacklog 记录队列积压
 func (m *MetricsRecorder) RecordQueueBacklog(ctx context.Context, topic string, backlog int64) {
-	m.queueBacklog.Add(ctx, backlog, metric.WithAttributes(
+	m.queueBacklog.Record(ctx, backlog, metric.WithAttributes(
 		attribute.String("adapter", m.adapter),
 		attribute.String("topic", topic),
 	))
