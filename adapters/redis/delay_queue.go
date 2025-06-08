@@ -21,18 +21,21 @@ type DelayQueue struct {
 	logger     *zap.Logger
 	keys       *KeyGenerator
 	serializer serializer.Serializer
-	keyPrefix  string
 }
 
 // NewRedisDelayQueue 创建Redis延时队列
-func NewRedisDelayQueue(client redis.Cmdable, observer observability.Observer, keyPrefix string, serializer serializer.Serializer, keys *KeyGenerator) *DelayQueue {
-	metrics, _ := observability.NewMetricsRecorder(observer, "redis")
+func NewRedisDelayQueue(
+	client redis.Cmdable,
+	observer observability.Observer,
+	recorder *observability.MetricsRecorder,
+	serializer serializer.Serializer,
+	keys *KeyGenerator,
+) *DelayQueue {
 	return &DelayQueue{
 		client:     client,
-		metrics:    metrics,
+		metrics:    recorder,
 		logger:     observer.GetLogger(),
 		keys:       keys,
-		keyPrefix:  keyPrefix,
 		serializer: serializer,
 	}
 }

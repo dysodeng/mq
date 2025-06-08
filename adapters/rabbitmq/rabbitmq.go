@@ -43,9 +43,15 @@ func NewRabbitMQ(cfg config.RabbitMQConfig, observer observability.Observer, key
 	// 设置默认值
 	cfg.SetDefaults()
 
+	// 创建指标记录器
+	recorder, err := observability.NewMetricsRecorder(observer, config.AdapterRabbitMQ.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metrics recorder: %w", err)
+	}
+
 	// 创建连接工厂
 	connFactory := NewConnectionFactory(cfg)
-	connectionPool, err := connFactory.CreateConnectionPool(observer)
+	connectionPool, err := connFactory.CreateConnectionPool(observer, recorder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
@@ -69,12 +75,6 @@ func NewRabbitMQ(cfg config.RabbitMQConfig, observer observability.Observer, key
 			_ = connectionPool.Close()
 		}
 	}()
-
-	// 创建指标记录器
-	recorder, err := observability.NewMetricsRecorder(observer, "rabbitmq")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create metrics recorder: %w", err)
-	}
 
 	// 创建键名生成器
 	keyGen := NewKeyGenerator(keyPrefix)

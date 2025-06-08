@@ -22,7 +22,7 @@ type Producer struct {
 	meter          metric.Meter
 	logger         *zap.Logger
 	producerConfig config.ProducerPerformanceConfig
-	config         config.RabbitMQConfig // 添加这个字段
+	config         config.RabbitMQConfig
 	serializer     serializer.Serializer
 	recorder       *observability.MetricsRecorder
 	keyGen         *KeyGenerator
@@ -42,7 +42,7 @@ func NewRabbitProducer(
 	pool *ConnectionPool,
 	observer observability.Observer,
 	recorder *observability.MetricsRecorder,
-	config config.RabbitMQConfig, // 添加这个参数
+	config config.RabbitMQConfig,
 	ser serializer.Serializer,
 	keyGen *KeyGenerator,
 ) *Producer {
@@ -57,7 +57,7 @@ func NewRabbitProducer(
 		recorder:       recorder,
 		keyGen:         keyGen,
 		producerConfig: producerConfig,
-		config:         config, // 添加这个字段
+		config:         config,
 		serializer:     ser,
 		batchCh:        make(chan *message.Message, producerConfig.BatchSize*2),
 		batch:          make([]*message.Message, 0, producerConfig.BatchSize),
@@ -74,12 +74,11 @@ func NewRabbitProducer(
 }
 
 // Send 发送消息
-// Send 方法中添加消息延迟和吞吐量指标
 func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	start := time.Now()
 	defer func() {
 		p.recorder.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
-		// 添加吞吐量指标
+		// 吞吐量指标
 		p.recorder.RecordThroughput(ctx, msg.Topic, 1)
 	}()
 
@@ -120,7 +119,6 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay time.Duration) error {
 	start := time.Now()
 	defer func() {
-		// 使用observability.go中定义的指标方法
 		p.recorder.RecordProcessingTime(ctx, msg.Topic, time.Since(start))
 	}()
 
@@ -205,7 +203,7 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 		false,        // mandatory
 		false,        // immediate
 		amqp.Publishing{
-			ContentType: "application/json",
+			ContentType: p.serializer.ContentType(),
 			Body:        body,
 			Headers:     headers,
 		},

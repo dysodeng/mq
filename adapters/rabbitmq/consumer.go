@@ -104,7 +104,6 @@ func (c *Consumer) Subscribe(ctx context.Context, topic string, handler message.
 
 // setupChannel 设置通道配置
 func (c *Consumer) setupChannel(ch *amqp.Channel, topic string) error {
-	// queueName := fmt.Sprintf("%s.%s", c.keyPrefix, topic)
 	queueName := c.keyGen.QueueName(topic)
 	exchangeName := c.keyGen.ExchangeName()
 
@@ -168,7 +167,6 @@ func (c *Consumer) consume(sub *subscription) {
 	}()
 
 	queueName := c.keyGen.QueueName(sub.topic)
-	// queueName := fmt.Sprintf("%s.%s", c.keyPrefix, sub.topic)
 
 	// 开始消费
 	msgs, err := sub.ch.Consume(
@@ -266,8 +264,8 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 	err := c.serializer.Deserialize(delivery.Body, &msg)
 	if err != nil {
 		c.logger.Error("failed to deserialize message", zap.Error(err), zap.String("topic", topic))
-		c.recorder.RecordProcessingError(ctx, topic, "deserialize_error") // 修复：使用正确的指标方法
-		_ = delivery.Nack(false, false)                                   // 拒绝消息，不重新入队
+		c.recorder.RecordProcessingError(ctx, topic, "deserialize_error")
+		_ = delivery.Nack(false, false) // 拒绝消息，不重新入队
 		return
 	}
 
@@ -307,6 +305,8 @@ func (c *Consumer) handleMessage(ctx context.Context, delivery amqp.Delivery, ha
 			_ = delivery.Nack(false, true) // 拒绝消息并重新入队
 			return
 		}
+
+		retryCount++
 
 		// 重试延迟
 		time.Sleep(time.Duration(retryCount) * time.Second)

@@ -18,19 +18,19 @@ import (
 
 // Consumer Redis消费者
 type Consumer struct {
-	client      redis.Cmdable
-	metrics     *observability.MetricsRecorder
-	logger      *zap.Logger
-	subscribers map[string]*subscription
-	mu          sync.RWMutex
-	closed      bool
-	keyPrefix   string
-	workerPool  *WorkerPool
-	keys        *KeyGenerator
-	config      config.ConsumerPerformanceConfig
-	serializer  serializer.Serializer // 序列化器
-	messagePool *pool.MessagePool     // 消息对象池
-	bufferPool  *pool.ByteBufferPool  // 缓冲区对象池
+	client         redis.Cmdable
+	metrics        *observability.MetricsRecorder
+	logger         *zap.Logger
+	subscribers    map[string]*subscription
+	mu             sync.RWMutex
+	closed         bool
+	workerPool     *WorkerPool
+	keys           *KeyGenerator
+	consumerConfig config.ConsumerPerformanceConfig
+	config         config.RedisConfig
+	serializer     serializer.Serializer // 序列化器
+	messagePool    *pool.MessagePool     // 消息对象池
+	bufferPool     *pool.ByteBufferPool  // 缓冲区对象池
 }
 
 // subscription 订阅信息
@@ -42,22 +42,29 @@ type subscription struct {
 }
 
 // NewRedisConsumer 创建Redis消费者
-func NewRedisConsumer(client redis.Cmdable, observer observability.Observer, keyPrefix string, config config.ConsumerPerformanceConfig, ser serializer.Serializer, objectPoolConfig config.ObjectPoolConfig, keys *KeyGenerator) *Consumer {
-	metrics, _ := observability.NewMetricsRecorder(observer, "redis")
+func NewRedisConsumer(
+	client redis.Cmdable,
+	observer observability.Observer,
+	config config.RedisConfig,
+	recorder *observability.MetricsRecorder,
+	ser serializer.Serializer,
+	keys *KeyGenerator,
+) *Consumer {
 	consumer := &Consumer{
-		client:      client,
-		metrics:     metrics,
-		logger:      observer.GetLogger(),
-		subscribers: make(map[string]*subscription),
-		keyPrefix:   keyPrefix,
-		config:      config,
-		keys:        keys,
+		client:         client,
+		metrics:        recorder,
+		logger:         observer.GetLogger(),
+		subscribers:    make(map[string]*subscription),
+		config:         config,
+		consumerConfig: config.GetConsumerConfig(),
+		keys:           keys,
+		serializer:     ser,
 	}
 
 	// 创建对象池（如果启用）
 	var messagePool *pool.MessagePool
 	var bufferPool *pool.ByteBufferPool
-	if objectPoolConfig.Enabled {
+	if config.GetObjectPoolConfig().Enabled {
 		messagePool = pool.NewMessagePool()
 		bufferPool = pool.NewByteBufferPool()
 	}
@@ -67,7 +74,7 @@ func NewRedisConsumer(client redis.Cmdable, observer observability.Observer, key
 	consumer.bufferPool = bufferPool
 
 	// 创建工作池
-	consumer.workerPool = NewWorkerPool(config.WorkerCount, config.BufferSize, consumer.logger, consumer.metrics)
+	consumer.workerPool = NewWorkerPool(consumer.consumerConfig.WorkerCount, consumer.consumerConfig.BufferSize, consumer.logger, consumer.metrics)
 	consumer.workerPool.Start()
 
 	return consumer
@@ -112,7 +119,7 @@ func (c *Consumer) consumeLoop(ctx context.Context, sub *subscription) {
 	defer close(sub.done)
 	defer c.logger.Info("consumer stopped", zap.String("topic", sub.topic))
 
-	retryInterval := c.config.RetryInterval
+	retryInterval := c.consumerConfig.RetryInterval
 
 	for {
 		select {
@@ -120,7 +127,7 @@ func (c *Consumer) consumeLoop(ctx context.Context, sub *subscription) {
 			return
 		default:
 			// 批量获取消息
-			messages, err := c.batchPopMessages(ctx, sub.topic, c.config.BatchSize)
+			messages, err := c.batchPopMessages(ctx, sub.topic, c.consumerConfig.BatchSize)
 			if err != nil {
 				c.logger.Error("consume loop failed", zap.String("topic", sub.topic), zap.Error(err))
 				if errors.Is(err, context.Canceled) {

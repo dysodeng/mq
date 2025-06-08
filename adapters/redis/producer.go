@@ -16,30 +16,31 @@ import (
 
 // Producer Redis生产者
 type Producer struct {
-	client     redis.Cmdable
-	metrics    *observability.MetricsRecorder
-	logger     *zap.Logger
-	config     config.ProducerPerformanceConfig
-	keyPrefix  string
-	serializer serializer.Serializer // 序列化器
-	keys       *KeyGenerator
+	client         redis.Cmdable
+	metrics        *observability.MetricsRecorder
+	logger         *zap.Logger
+	producerConfig config.ProducerPerformanceConfig
+	config         config.RedisConfig
+	serializer     serializer.Serializer // 序列化器
+	keys           *KeyGenerator
 }
 
-func NewRedisProducer(client redis.Cmdable, observer observability.Observer, keyPrefix string, config config.ProducerPerformanceConfig, ser serializer.Serializer, keys *KeyGenerator) *Producer {
-	logger := observer.GetLogger()
-	metrics, err := observability.NewMetricsRecorder(observer, "redis")
-	if err != nil {
-		logger.Warn("Failed to create metrics record for redis", zap.Error(err))
-	}
-
+func NewRedisProducer(
+	client redis.Cmdable,
+	observer observability.Observer,
+	config config.RedisConfig,
+	recorder *observability.MetricsRecorder,
+	ser serializer.Serializer,
+	keys *KeyGenerator,
+) *Producer {
 	return &Producer{
-		client:     client,
-		metrics:    metrics,
-		logger:     logger,
-		keyPrefix:  keyPrefix,
-		config:     config,
-		serializer: ser,
-		keys:       keys,
+		client:         client,
+		metrics:        recorder,
+		logger:         observer.GetLogger(),
+		producerConfig: config.GetProducerConfig(),
+		config:         config,
+		serializer:     ser,
+		keys:           keys,
 	}
 }
 

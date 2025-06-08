@@ -19,7 +19,7 @@ type WorkerPool struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	logger      *zap.Logger
-	metrics     *observability.MetricsRecorder // 添加metrics
+	metrics     *observability.MetricsRecorder
 }
 
 // Task 任务

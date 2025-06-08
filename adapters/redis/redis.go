@@ -64,11 +64,8 @@ func NewRedisMQ(cfg config.RedisConfig, observer observability.Observer, keyPref
 		}
 	}()
 
-	// 获取配置
-	serializationConfig := cfg.GetSerializationConfig()
-	objectPoolConfig := cfg.GetObjectPoolConfig()
-
 	// 创建序列化器
+	serializationConfig := cfg.GetSerializationConfig()
 	ser, err := serializer.NewSerializer(serializer.Type(serializationConfig.Type))
 	if err != nil {
 		fmt.Printf("Failed to create serializer, fallback to JSON: %v", err)
@@ -76,21 +73,21 @@ func NewRedisMQ(cfg config.RedisConfig, observer observability.Observer, keyPref
 	}
 
 	// 创建键名生成器
-	keys := NewKeyGenerator(keyPrefix)
-
-	// 创建组件（传递序列化和对象池配置）
-	producer := NewRedisProducer(client, observer, keyPrefix, cfg.GetProducerConfig(), ser, keys)
-	consumer := NewRedisConsumer(client, observer, keyPrefix, cfg.GetConsumerConfig(), ser, objectPoolConfig, keys)
-	delayQueue := NewRedisDelayQueue(client, observer, keyPrefix, ser, keys)
-
-	// 创建延时处理器
-	delayProcessor := NewDelayProcessor(client, observer, keyPrefix, ser, keys)
+	keyGen := NewKeyGenerator(keyPrefix)
 
 	// 创建指标记录器
-	recorder, err := observability.NewMetricsRecorder(observer, "redis")
+	recorder, err := observability.NewMetricsRecorder(observer, config.AdapterRedis.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metrics recorder: %w", err)
 	}
+
+	// 创建组件（传递序列化和对象池配置）
+	producer := NewRedisProducer(client, observer, cfg, recorder, ser, keyGen)
+	consumer := NewRedisConsumer(client, observer, cfg, recorder, ser, keyGen)
+	delayQueue := NewRedisDelayQueue(client, observer, recorder, ser, keyGen)
+
+	// 创建延时处理器
+	delayProcessor := NewDelayProcessor(client, observer, recorder, ser, keyGen)
 
 	mq := &Redis{
 		client:         client,

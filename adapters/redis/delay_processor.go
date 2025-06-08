@@ -23,7 +23,6 @@ type DelayProcessor struct {
 	logger     *zap.Logger
 	keys       *KeyGenerator
 	serializer serializer.Serializer
-	keyPrefix  string
 
 	// 性能优化配置
 	batchSize    int           // 批处理大小
@@ -32,15 +31,19 @@ type DelayProcessor struct {
 }
 
 // NewDelayProcessor 创建延时消息处理器
-func NewDelayProcessor(client Client, observer observability.Observer, keyPrefix string, serializer serializer.Serializer, keys *KeyGenerator) *DelayProcessor {
-	metrics, _ := observability.NewMetricsRecorder(observer, "redis")
+func NewDelayProcessor(
+	client Client,
+	observer observability.Observer,
+	recorder *observability.MetricsRecorder,
+	serializer serializer.Serializer,
+	keys *KeyGenerator,
+) *DelayProcessor {
 	return &DelayProcessor{
 		client:       client,
-		metrics:      metrics,
+		metrics:      recorder,
 		logger:       observer.GetLogger(),
 		keys:         keys,
 		serializer:   serializer,
-		keyPrefix:    keyPrefix,
 		batchSize:    100,
 		pollInterval: time.Second,
 		maxBackoff:   30 * time.Second,

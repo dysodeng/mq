@@ -14,15 +14,14 @@ import (
 
 // ConnectionPool RabbitMQ连接池
 type ConnectionPool struct {
-	connections []*amqp.Connection
-	channels    chan *amqp.Channel
-	config      config.RabbitMQConfig
-	logger      *zap.Logger
-	recorder    *observability.MetricsRecorder
-	mu          sync.RWMutex
-	closed      bool
-	connURL     string
-	// 新增字段
+	connections  []*amqp.Connection
+	channels     chan *amqp.Channel
+	config       config.RabbitMQConfig
+	logger       *zap.Logger
+	recorder     *observability.MetricsRecorder
+	mu           sync.RWMutex
+	closed       bool
+	connURL      string
 	reconnectCh  chan struct{}
 	healthTicker *time.Ticker
 }
@@ -40,20 +39,13 @@ func NewConnectionFactory(config config.RabbitMQConfig) *ConnectionFactory {
 }
 
 // CreateConnectionPool 创建连接池
-func (f *ConnectionFactory) CreateConnectionPool(observer observability.Observer) (*ConnectionPool, error) {
-	// 构建连接字符串
+func (f *ConnectionFactory) CreateConnectionPool(observer observability.Observer, recorder *observability.MetricsRecorder) (*ConnectionPool, error) {
 	var connURL string
 	if f.config.URL != "" {
 		connURL = f.config.URL
 	} else {
 		connURL = fmt.Sprintf("amqp://%s:%s@%s:%d%s",
 			f.config.Username, f.config.Password, f.config.Host, f.config.Port, f.config.VHost)
-	}
-
-	// 创建指标记录器
-	recorder, err := observability.NewMetricsRecorder(observer, "rabbitmq")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create metrics recorder: %w", err)
 	}
 
 	pool := &ConnectionPool{
@@ -82,13 +74,11 @@ func (p *ConnectionPool) initialize() error {
 
 	// 创建初始连接
 	for i := 0; i < p.config.MinConnections; i++ {
-		p.logger.Info("创建连接", zap.Int("index", i))
 		conn, err := p.createConnection()
 		if err != nil {
 			return fmt.Errorf("failed to create initial connection %d: %w", i, err)
 		}
 		p.connections = append(p.connections, conn)
-		p.logger.Info("连接创建成功", zap.Int("index", i))
 	}
 
 	// 预创建通道池
@@ -97,7 +87,6 @@ func (p *ConnectionPool) initialize() error {
 		if i%10 == 0 {
 			p.logger.Info("创建通道进度", zap.Int("created", i), zap.Int("total", p.config.ChannelPoolSize))
 		}
-		p.logger.Info("正在创建通道", zap.Int("index", i))
 
 		// 直接使用第一个连接创建通道，避免调用 getHealthyConnection() 导致死锁
 		if len(p.connections) == 0 {
@@ -117,7 +106,6 @@ func (p *ConnectionPool) initialize() error {
 			p.logger.Warn("failed to create initial channel", zap.Error(err), zap.Int("index", i))
 			continue
 		}
-		p.logger.Info("通道创建成功", zap.Int("index", i))
 		p.channels <- ch
 	}
 	p.logger.Info("通道池创建完成")
