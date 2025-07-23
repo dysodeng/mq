@@ -9,6 +9,7 @@ import (
 	"github.com/dysodeng/mq/config"
 	"github.com/dysodeng/mq/message"
 	"github.com/dysodeng/mq/observability"
+	"github.com/google/uuid"
 )
 
 // Producer 内存生产者
@@ -47,6 +48,11 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	}
 
 	start := time.Now()
+	if msg.ID == "" {
+		msg.SetID(uuid.NewString())
+	}
+	msg.SetCreateAt(start)
+	msg.SetDelay(0)
 
 	// 获取或创建队列
 	queue := p.getOrCreateQueue(msg.Topic)
@@ -83,6 +89,11 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 	}
 
 	start := time.Now()
+	if msg.ID == "" {
+		msg.SetID(uuid.NewString())
+	}
+	msg.SetCreateAt(start)
+	msg.SetDelay(delay)
 
 	// 发送到延时队列
 	if err := p.delayQueue.Push(ctx, msg, delay); err != nil {

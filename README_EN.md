@@ -101,11 +101,31 @@ func main() {
 
 |Adapter | Status | Features|
 |--------|--------|---------|
+| Memory |✅ |Pure in-memory queues, High performance, **Single machine only**|
 | Redis| ✅ |List-based queues, Sorted sets for delays|
 | RabbitMQ| ✅ |AMQP protocol, Exchange routing|
 | Kafka |✅ |Distributed streaming, Partitioning|
 
 ## ⚙️ Configuration
+
+### Memory Configuration
+```go
+cfg := config.Config{
+    Adapter:   config.AdapterMemory,
+    KeyPrefix: "myapp",
+    Memory: config.MemoryConfig{
+        // Queue configuration
+        MaxQueueSize:       10000,              // Max queue size per topic
+        MaxDelayQueueSize:  1000,               // Max delay queue size
+        DelayCheckInterval: 100 * time.Millisecond, // Delay message check interval
+        
+        // Monitoring configuration
+        EnableMetrics:      true,               // Enable metrics collection
+    },
+}
+```
+**Note**: The memory adapter is a pure in-memory implementation with no data persistence. It's suitable for single-machine environments only. All messages will be lost after application restart.
+
 ### Redis Configuration
 ```go
 cfg := config.Config{

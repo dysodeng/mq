@@ -70,37 +70,21 @@ func main() {
 	// 8. 发送消息
 	producer := mqInstance.Producer()
 	go func() {
-		msg := &message.Message{
-			Topic:   "test-topic",
-			Payload: []byte("Hello, World---1!"),
-		}
-		err = producer.Send(ctx, msg)
+		err = producer.Send(ctx, message.New("test-topic", []byte("Hello, World---1!")))
 		if err != nil {
 			log.Printf("Failed to send message: %v", err)
 		}
 
-		err = producer.Send(ctx, &message.Message{
-			Topic:   "test-topic",
-			Payload: []byte("Hello, World---2!"),
-		})
+		err = producer.Send(ctx, message.New("test-topic", []byte("Hello, World---2!")))
 
 		go func() {
 			time.Sleep(5 * time.Second)
-			err = producer.Send(ctx, &message.Message{
-				Topic:   "test-topic",
-				Payload: []byte("Hello, World---3!"),
-			})
+			err = producer.Send(ctx, message.New("test-topic", []byte("Hello, World---3!")))
 		}()
 
-		err = producer.SendDelay(ctx, &message.Message{
-			Topic:   "delay-test-topic",
-			Payload: []byte("Hello, Delay Message!"),
-		}, 10*time.Second)
+		err = producer.SendDelay(ctx, message.New("delay-test-topic", []byte("Hello, Delay Message!")), 10*time.Second)
 
-		_ = producer.SendDelay(ctx, &message.Message{
-			Topic:   "delay2-test-topic",
-			Payload: []byte("Hello, Delay2 Message---1!"),
-		}, 20*time.Second)
+		_ = producer.SendDelay(ctx, message.New("delay2-test-topic", []byte("Hello, Delay2 Message---1!")), 20*time.Second)
 
 		time.Sleep(5 * time.Second)
 		_ = producer.SendDelay(ctx, &message.Message{

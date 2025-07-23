@@ -188,14 +188,11 @@ func main() {
 	start := time.Now()
 	messages := make([]*message.Message, 1000)
 	for i := 0; i < 1000; i++ {
-		messages[i] = &message.Message{
-			Topic:   "perf-topic",
-			Payload: []byte(fmt.Sprintf("High performance message %d", i)),
-			Headers: map[string]string{
-				"batch_id": "batch-001",
-				"index":    fmt.Sprintf("%d", i),
-			},
-		}
+		messages[i] = message.New("perf-topic", []byte(fmt.Sprintf("High performance message %d", i)))
+		messages[i].SetHeaders(map[string]string{
+			"batch_id": "batch-001",
+			"index":    fmt.Sprintf("%d", i),
+		})
 	}
 
 	err = producer.SendBatch(ctx, messages)

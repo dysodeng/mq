@@ -48,9 +48,10 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	start := time.Now()
 
 	if msg.ID == "" {
-		msg.ID = uuid.New().String()
+		msg.SetID(uuid.NewString())
 	}
-	msg.CreateAt = time.Now()
+	msg.SetCreateAt(start)
+	msg.SetDelay(0)
 
 	// 使用配置的序列化器
 	data, err := p.serializer.Serialize(msg)
@@ -79,13 +80,13 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 	start := time.Now()
 
 	if msg.ID == "" {
-		msg.ID = uuid.New().String()
+		msg.SetID(uuid.NewString())
 	}
-	msg.CreateAt = time.Now()
-	msg.Delay = delay
+	msg.SetCreateAt(start)
+	msg.SetDelay(delay)
 
 	// 直接使用延时队列发送，而不是普通队列
-	executeTime := time.Now().Add(delay).Unix()
+	executeTime := start.Add(delay).Unix()
 
 	data, err := p.serializer.Serialize(msg)
 	if err != nil {
@@ -124,9 +125,10 @@ func (p *Producer) SendBatch(ctx context.Context, messages []*message.Message) e
 
 	for _, msg := range messages {
 		if msg.ID == "" {
-			msg.ID = uuid.New().String()
+			msg.SetID(uuid.NewString())
 		}
-		msg.CreateAt = time.Now()
+		msg.SetCreateAt(start)
+		msg.SetDelay(0)
 
 		data, err := p.serializer.Serialize(msg)
 		if err != nil {

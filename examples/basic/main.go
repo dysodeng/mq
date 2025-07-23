@@ -31,13 +31,8 @@ func main() {
 
 	// 生产者示例
 	producer := mqInstance.Producer()
-	msg := &message.Message{
-		Topic:   "test-topic",
-		Payload: []byte("Hello, World!"),
-		Headers: map[string]string{
-			"source": "example",
-		},
-	}
+	msg := message.New("test-topic", []byte("hello world"))
+	msg.SetHeaders(map[string]string{"source": "example"})
 
 	ctx := context.Background()
 	err = producer.Send(ctx, msg)
@@ -47,11 +42,7 @@ func main() {
 	fmt.Println("Message sent successfully")
 
 	// 延时消息示例
-	delayMsg := &message.Message{
-		Topic:   "delay-topic",
-		Payload: []byte("Delayed message"),
-	}
-
+	delayMsg := message.New("delay-topic", []byte("Delayed message"))
 	err = mqInstance.DelayQueue().Push(ctx, delayMsg, 10*time.Second)
 	if err != nil {
 		log.Fatal("Failed to send delay message:", err)

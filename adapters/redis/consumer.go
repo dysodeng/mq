@@ -129,10 +129,12 @@ func (c *Consumer) consumeLoop(ctx context.Context, sub *subscription) {
 			// 批量获取消息
 			messages, err := c.batchPopMessages(ctx, sub.topic, c.consumerConfig.BatchSize)
 			if err != nil {
-				c.logger.Error("consume loop failed", zap.String("topic", sub.topic), zap.Error(err))
 				if errors.Is(err, context.Canceled) {
+					c.logger.Debug("consume loop stopped due to context cancellation",
+						zap.String("topic", sub.topic), zap.Error(err))
 					return
 				}
+				c.logger.Error("consume loop failed", zap.String("topic", sub.topic), zap.Error(err))
 				c.logger.Error("failed to pop messages", zap.Error(err), zap.String("topic", sub.topic))
 				time.Sleep(retryInterval)
 				continue

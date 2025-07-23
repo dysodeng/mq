@@ -53,9 +53,9 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	}()
 
 	if msg.ID == "" {
-		msg.ID = uuid.New().String()
+		msg.SetID(uuid.NewString())
 	}
-	msg.CreateAt = time.Now()
+	msg.SetCreateAt(start)
 
 	body, err := json.Marshal(msg)
 	if err != nil {
@@ -103,7 +103,7 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 // SendDelay 发送延时消息
 func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay time.Duration) error {
 	// Kafka本身不支持延时消息，需要通过延时队列实现
-	msg.Delay = delay
+	msg.SetDelay(delay)
 	return p.Send(ctx, msg)
 }
 
@@ -113,9 +113,10 @@ func (p *Producer) SendBatch(ctx context.Context, msgs []*message.Message) error
 
 	for _, msg := range msgs {
 		if msg.ID == "" {
-			msg.ID = uuid.New().String()
+			msg.SetID(uuid.NewString())
 		}
-		msg.CreateAt = time.Now()
+		msg.SetCreateAt(time.Now())
+		msg.SetDelay(0)
 
 		body, err := json.Marshal(msg)
 		if err != nil {

@@ -92,9 +92,10 @@ func (p *Producer) Send(ctx context.Context, msg *message.Message) error {
 	}()
 
 	if msg.ID == "" {
-		msg.ID = uuid.New().String()
+		msg.SetID(uuid.NewString())
 	}
-	msg.CreateAt = time.Now()
+	msg.SetCreateAt(start)
+	msg.SetDelay(0)
 
 	// 记录消息延迟（从创建到发送的时间）
 	if !msg.CreateAt.IsZero() {
@@ -132,9 +133,10 @@ func (p *Producer) SendDelay(ctx context.Context, msg *message.Message, delay ti
 	}()
 
 	if msg.ID == "" {
-		msg.ID = uuid.New().String()
+		msg.SetID(uuid.NewString())
 	}
-	msg.CreateAt = time.Now()
+	msg.SetCreateAt(start)
+	msg.SetDelay(delay)
 
 	// 获取通道
 	ch, err := p.connectionPool.GetChannel(ctx)
@@ -314,13 +316,6 @@ func (p *Producer) sendSingle(ctx context.Context, msg *message.Message) error {
 		return fmt.Errorf("failed to bind queue: %w", err)
 	}
 
-	// 序列化消息
-	// body, err := p.serializer.Serialize(msg)
-	// if err != nil {
-	// 	p.recorder.RecordProcessingError(ctx, msg.Topic, "serialize_error")
-	// 	return fmt.Errorf("serialize message failed: %w", err)
-	// }
-
 	// 构建AMQP消息头
 	headers := make(amqp.Table)
 	for k, v := range msg.Headers {
@@ -442,9 +437,10 @@ func (p *Producer) SendBatch(ctx context.Context, messages []*message.Message) e
 	topicGroups := make(map[string][]*message.Message)
 	for _, msg := range messages {
 		if msg.ID == "" {
-			msg.ID = uuid.New().String()
+			msg.SetID(uuid.NewString())
 		}
-		msg.CreateAt = time.Now()
+		msg.SetCreateAt(start)
+		msg.SetDelay(0)
 		topicGroups[msg.Topic] = append(topicGroups[msg.Topic], msg)
 	}
 

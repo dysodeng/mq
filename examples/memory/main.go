@@ -73,12 +73,8 @@ func main() {
 
 	// 生产者示例
 	producer := mqInstance.Producer()
-	msg := &message.Message{
-		ID:      "test-1",
-		Topic:   "test-topic",
-		Payload: []byte("Hello Memory MQ!"),
-		Headers: map[string]string{"type": "test"},
-	}
+	msg := message.New("test-topic", []byte("Hello Memory MQ!"))
+	msg.SetHeaders(map[string]string{"type": "test"})
 
 	err = producer.Send(ctx, msg)
 	if err != nil {
@@ -105,12 +101,7 @@ func main() {
 	}
 
 	// 延时消息示例
-	delayMsg := &message.Message{
-		ID:      "delay-1",
-		Topic:   "test-topic",
-		Payload: []byte("Delayed message!"),
-	}
-
+	delayMsg := message.New("test-topic", []byte("Delayed message!"))
 	err = producer.SendDelay(ctx, delayMsg, 5*time.Second)
 	if err != nil {
 		log.Fatal("发送延时消息失败:", err)

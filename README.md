@@ -101,11 +101,31 @@ func main() {
 
 | 适配器      | 状态 | 特性                                  |
 |----------|----|-------------------------------------|
+| Memory   | ✅  | 纯内存队列，高性能，**仅限单机使用**                |
 | Redis    | ✅  | 基于List的队列，Sorted sets实现延时，支持集群和哨兵模式 |
 | RabbitMQ | ✅  | AMQP协议，Exchange路由，持久化支持             |
 | Kafka    | ✅  | 分布式流处理，分区支持，高吞吐量                    |
 
 ## ⚙️ 配置
+
+### Memory 配置
+```go
+cfg := config.Config{
+    Adapter:   config.AdapterMemory,
+    KeyPrefix: "myapp",
+    Memory: config.MemoryConfig{
+        // 队列配置
+        MaxQueueSize:       10000,              // 每个topic最大队列大小
+        MaxDelayQueueSize:  1000,               // 延时队列最大大小
+        DelayCheckInterval: 100 * time.Millisecond, // 延时消息检查间隔
+        
+        // 监控配置
+        EnableMetrics:      true,               // 启用指标收集
+    },
+}
+```
+**注意**: 内存适配器是纯内存实现，数据不会持久化，仅适用于单机环境。应用重启后所有消息将丢失。
+
 ### Redis 配置
 ```go
 cfg := config.Config{
