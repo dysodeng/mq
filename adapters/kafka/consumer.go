@@ -130,7 +130,7 @@ func (c *Consumer) Unsubscribe(topic string) error {
 	}
 
 	if reader, exists := c.readers[topic]; exists {
-		reader.Close()
+		_ = reader.Close()
 		delete(c.readers, topic)
 	}
 
@@ -151,7 +151,7 @@ func (c *Consumer) Close() error {
 
 	// 关闭所有Reader
 	for topic, reader := range c.readers {
-		reader.Close()
+		_ = reader.Close()
 		delete(c.readers, topic)
 	}
 

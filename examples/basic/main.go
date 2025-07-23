@@ -25,7 +25,9 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create MQ:", err)
 	}
-	defer mqInstance.Close()
+	defer func() {
+		_ = mqInstance.Close()
+	}()
 
 	// 生产者示例
 	producer := mqInstance.Producer()

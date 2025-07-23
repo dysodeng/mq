@@ -35,7 +35,9 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to initialize logger:", err)
 	}
-	defer logger.Sync()
+	defer func() {
+		_ = logger.Sync()
+	}()
 
 	// 3. 获取Meter
 	meter := otel.Meter("mq-example")
@@ -61,7 +63,9 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create MQ instance:", err)
 	}
-	defer mqInstance.Close()
+	defer func() {
+		_ = mqInstance.Close()
+	}()
 
 	// 8. 发送消息
 	producer := mqInstance.Producer()

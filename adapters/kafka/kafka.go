@@ -68,7 +68,9 @@ func (k *Kafka) HealthCheck() error {
 	if err != nil {
 		return fmt.Errorf("kafka connection failed: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	// 获取broker信息
 	_, err = conn.Brokers()

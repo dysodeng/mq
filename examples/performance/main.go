@@ -145,7 +145,9 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create MQ:", err)
 	}
-	defer mqInstance.Close()
+	defer func() {
+		_ = mqInstance.Close()
+	}()
 
 	// 获取消费者和生产者（已经是增强版本）
 	consumer := mqInstance.Consumer()
