@@ -18,6 +18,8 @@ type Config struct {
 	RabbitMQ RabbitMQConfig `json:"rabbitmq" yaml:"rabbitmq"`
 	// Kafka配置
 	Kafka KafkaConfig `json:"kafka" yaml:"kafka"`
+	// Memory配置
+	Memory MemoryConfig `json:"memory" yaml:"memory"`
 }
 
 // PoolConfig 连接池配置

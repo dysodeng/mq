@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/dysodeng/mq/adapters/kafka"
+	"github.com/dysodeng/mq/adapters/memory"
 	"github.com/dysodeng/mq/adapters/rabbitmq"
 	"github.com/dysodeng/mq/adapters/redis"
 	"github.com/dysodeng/mq/config"
@@ -87,6 +88,8 @@ func (factory *Factory) CreateMQ() (contract.MQ, error) {
 		return rabbitmq.NewRabbitMQ(factory.config.RabbitMQ, factory.observer, factory.config.KeyPrefix)
 	case config.AdapterKafka:
 		return kafka.NewKafkaMQ(factory.config.Kafka, factory.observer, factory.config.KeyPrefix)
+	case config.AdapterMemory:
+		return memory.NewMemoryMQ(factory.config.Memory, factory.observer, factory.config.KeyPrefix)
 	default:
 		return nil, fmt.Errorf("unsupported adapter: %s", factory.config.Adapter)
 	}

@@ -8,6 +8,7 @@ const (
 	AdapterRedis    Adapter = "redis"
 	AdapterRabbitMQ Adapter = "rabbitmq"
 	AdapterKafka    Adapter = "kafka"
+	AdapterMemory   Adapter = "memory"
 )
 
 // String 实现Stringer接口
@@ -18,7 +19,7 @@ func (a Adapter) String() string {
 // IsValid 检查适配器是否有效
 func (a Adapter) IsValid() bool {
 	switch a {
-	case AdapterRedis, AdapterRabbitMQ, AdapterKafka:
+	case AdapterRedis, AdapterRabbitMQ, AdapterKafka, AdapterMemory:
 		return true
 	default:
 		return false
